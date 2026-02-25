@@ -1,6 +1,6 @@
 {
   "name": "@banliang/clawtrace",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "ClawTrace - OpenClaw原生Agent可观测性Skill：Skill执行追踪 + Memory变更记录 + Cron历史 + Sub-agent调用树",
   "main": "dist/index.js",
   "bin": {

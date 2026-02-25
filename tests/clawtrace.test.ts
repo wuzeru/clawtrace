@@ -11,6 +11,7 @@ import { TraceRecorder } from '../src/trace/recorder';
 import { detectSkills } from '../src/init/detector';
 import { readInitConfig, writeInitConfig } from '../src/init/config';
 import { injectSkillStats, buildStatsBlock, STATS_START_MARKER, STATS_END_MARKER } from '../src/init/injector';
+import { extractSkillCallFromLine, scanSessionLogs, importSessionLogs } from '../src/import/importer';
 import { SkillTrace, MemoryChange, CronRecord } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -853,5 +854,286 @@ describe('injectSkillStats', () => {
     injectSkillStats(skillFile, 'sk', []);
     const content = fs.readFileSync(skillFile, 'utf8');
     expect(content.startsWith(original)).toBe(true);
+  });
+
+  it('should include MANDATORY reporting instruction prominently', () => {
+    fs.writeFileSync(skillFile, '# My Skill\n');
+    injectSkillStats(skillFile, 'my-skill', []);
+    const content = fs.readFileSync(skillFile, 'utf8');
+    expect(content).toContain('MANDATORY');
+    // Reporting instruction appears before the stats table
+    const mandatoryIdx = content.indexOf('MANDATORY');
+    const tableIdx = content.indexOf('| Runs today |');
+    expect(mandatoryIdx).toBeLessThan(tableIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TraceStore.readTracesDateRange
+// ---------------------------------------------------------------------------
+describe('TraceStore.readTracesDateRange', () => {
+  let tracesDir: string;
+  let memoryChangesDir: string;
+  let cleanup: () => void;
+  let store: TraceStore;
+
+  beforeEach(() => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-range-'));
+    tracesDir = path.join(base, 'traces');
+    memoryChangesDir = path.join(base, 'memory-changes');
+    fs.mkdirSync(tracesDir, { recursive: true });
+    fs.mkdirSync(memoryChangesDir, { recursive: true });
+    cleanup = () => fs.rmSync(base, { recursive: true, force: true });
+    store = new TraceStore(tracesDir, memoryChangesDir);
+  });
+
+  afterEach(() => cleanup());
+
+  it('should return traces across multiple days', () => {
+    const day1 = new Date('2026-02-01T10:00:00Z');
+    const day2 = new Date('2026-02-03T10:00:00Z');
+    store.appendTrace({ id: 't1', skillName: 'skill-a', startTime: day1.toISOString(), status: 'success' }, day1);
+    store.appendTrace({ id: 't2', skillName: 'skill-b', startTime: day2.toISOString(), status: 'failed' }, day2);
+
+    const results = store.readTracesDateRange(new Date('2026-02-01'), new Date('2026-02-03'));
+    expect(results.map((r) => r.id).sort()).toEqual(['t1', 't2']);
+  });
+
+  it('should return empty array when no traces exist in range', () => {
+    const results = store.readTracesDateRange(new Date('2026-01-01'), new Date('2026-01-31'));
+    expect(results).toEqual([]);
+  });
+
+  it('should exclude traces outside the range', () => {
+    const inRange = new Date('2026-02-15T10:00:00Z');
+    const outOfRange = new Date('2026-01-01T10:00:00Z');
+    store.appendTrace({ id: 'in', skillName: 'skill-a', startTime: inRange.toISOString(), status: 'success' }, inRange);
+    store.appendTrace({ id: 'out', skillName: 'skill-b', startTime: outOfRange.toISOString(), status: 'success' }, outOfRange);
+
+    const results = store.readTracesDateRange(new Date('2026-02-01'), new Date('2026-02-28'));
+    expect(results.map((r) => r.id)).toEqual(['in']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ClawTrace.getStatsRange and ClawTrace.getRankings
+// ---------------------------------------------------------------------------
+describe('ClawTrace multi-day stats', () => {
+  let ct: ClawTrace;
+  let cleanup: () => void;
+
+  beforeEach(() => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-stats-'));
+    const tracesDir = path.join(base, 'traces');
+    const memoryChangesDir = path.join(base, 'memory-changes');
+    fs.mkdirSync(tracesDir, { recursive: true });
+    fs.mkdirSync(memoryChangesDir, { recursive: true });
+    cleanup = () => fs.rmSync(base, { recursive: true, force: true });
+    ct = new ClawTrace({ tracesDir, memoryChangesDir });
+  });
+
+  afterEach(() => cleanup());
+
+  it('getStatsRange should aggregate traces across days', () => {
+    const day1 = new Date('2026-02-10T08:00:00Z');
+    const day2 = new Date('2026-02-11T09:00:00Z');
+    ct.store.appendTrace({ id: '1', skillName: 'sk-a', startTime: day1.toISOString(), status: 'success', durationMs: 1000 }, day1);
+    ct.store.appendTrace({ id: '2', skillName: 'sk-b', startTime: day2.toISOString(), status: 'failed', durationMs: 2000 }, day2);
+
+    const summary = ct.getStatsRange(new Date('2026-02-10'), new Date('2026-02-11'));
+    expect(summary.totalSkills).toBe(2);
+    expect(summary.successCount).toBe(1);
+    expect(summary.failedCount).toBe(1);
+    expect(summary.date).toContain('2026-02-10');
+    expect(summary.date).toContain('2026-02-11');
+  });
+
+  it('getRankings should sort skills by call count descending', () => {
+    const day = new Date('2026-02-10T08:00:00Z');
+    ct.store.appendTrace({ id: '1', skillName: 'rare', startTime: day.toISOString(), status: 'success' }, day);
+    ct.store.appendTrace({ id: '2', skillName: 'popular', startTime: day.toISOString(), status: 'success' }, day);
+    ct.store.appendTrace({ id: '3', skillName: 'popular', startTime: day.toISOString(), status: 'failed' }, day);
+    ct.store.appendTrace({ id: '4', skillName: 'popular', startTime: day.toISOString(), status: 'success' }, day);
+
+    const rankings = ct.getRankings(new Date('2026-02-10'), new Date('2026-02-10'));
+    expect(rankings[0].skillName).toBe('popular');
+    expect(rankings[0].callCount).toBe(3);
+    expect(rankings[0].successRate).toBe(67);
+    expect(rankings[1].skillName).toBe('rare');
+    expect(rankings[1].callCount).toBe(1);
+  });
+
+  it('getRankings should return empty array when no traces exist', () => {
+    const rankings = ct.getRankings(new Date('2026-01-01'), new Date('2026-01-31'));
+    expect(rankings).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractSkillCallFromLine
+// ---------------------------------------------------------------------------
+describe('extractSkillCallFromLine', () => {
+  it('should return null for non-JSON lines', () => {
+    expect(extractSkillCallFromLine('not json', 'sess1')).toBeNull();
+  });
+
+  it('should return null for JSON lines without SKILL.md', () => {
+    expect(extractSkillCallFromLine('{"type":"message","content":"hello"}', 'sess1')).toBeNull();
+  });
+
+  it('should extract skill name from a line referencing skills/<name>/SKILL.md', () => {
+    const line = JSON.stringify({
+      timestamp: '2026-02-01T08:00:00Z',
+      type: 'tool_use',
+      input: { path: 'skills/github-project-reviewer/SKILL.md' },
+    });
+    const result = extractSkillCallFromLine(line, 'sess1');
+    expect(result).not.toBeNull();
+    expect(result!.skillName).toBe('github-project-reviewer');
+    expect(result!.sessionId).toBe('sess1');
+    expect(result!.timestamp).toBe('2026-02-01T08:00:00Z');
+  });
+
+  it('should fall back to current time when no timestamp in entry', () => {
+    const before = new Date();
+    const line = JSON.stringify({ tool: 'read', path: 'skills/my-skill/SKILL.md' });
+    const result = extractSkillCallFromLine(line, 'sess1');
+    const after = new Date();
+    expect(result).not.toBeNull();
+    const ts = new Date(result!.timestamp);
+    expect(ts >= before).toBe(true);
+    expect(ts <= after).toBe(true);
+  });
+
+  it('should pick up timestamp from nested message object', () => {
+    const line = JSON.stringify({
+      message: { timestamp: '2026-02-02T10:00:00Z' },
+      data: 'skills/nested-skill/SKILL.md',
+    });
+    const result = extractSkillCallFromLine(line, 'sess1');
+    expect(result).not.toBeNull();
+    expect(result!.timestamp).toBe('2026-02-02T10:00:00Z');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanSessionLogs and importSessionLogs
+// ---------------------------------------------------------------------------
+describe('scanSessionLogs', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-sessions-'));
+  });
+
+  afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  it('should return empty array when directory does not exist', () => {
+    expect(scanSessionLogs('/nonexistent/path/to/sessions')).toEqual([]);
+  });
+
+  it('should extract skill calls from session JSONL files', () => {
+    const lines = [
+      JSON.stringify({ timestamp: '2026-02-01T08:00:00Z', input: { path: 'skills/skill-a/SKILL.md' } }),
+      JSON.stringify({ timestamp: '2026-02-01T09:00:00Z', input: { path: 'skills/skill-b/SKILL.md' } }),
+      JSON.stringify({ timestamp: '2026-02-01T10:00:00Z', content: 'no skill reference here' }),
+    ].join('\n');
+    fs.writeFileSync(path.join(tmpDir, 'session-001.jsonl'), lines);
+
+    const results = scanSessionLogs(tmpDir);
+    expect(results).toHaveLength(2);
+    expect(results.map((r) => r.skillName).sort()).toEqual(['skill-a', 'skill-b']);
+  });
+
+  it('should filter entries by since date', () => {
+    const lines = [
+      JSON.stringify({ timestamp: '2026-01-01T08:00:00Z', input: { path: 'skills/old-skill/SKILL.md' } }),
+      JSON.stringify({ timestamp: '2026-02-15T08:00:00Z', input: { path: 'skills/new-skill/SKILL.md' } }),
+    ].join('\n');
+    fs.writeFileSync(path.join(tmpDir, 'session-001.jsonl'), lines);
+
+    const results = scanSessionLogs(tmpDir, new Date('2026-02-01'));
+    expect(results).toHaveLength(1);
+    expect(results[0].skillName).toBe('new-skill');
+  });
+
+  it('should scan multiple JSONL files', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'sess-a.jsonl'),
+      JSON.stringify({ timestamp: '2026-02-01T08:00:00Z', input: { path: 'skills/skill-x/SKILL.md' } }) + '\n'
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, 'sess-b.jsonl'),
+      JSON.stringify({ timestamp: '2026-02-02T08:00:00Z', input: { path: 'skills/skill-y/SKILL.md' } }) + '\n'
+    );
+
+    const results = scanSessionLogs(tmpDir);
+    expect(results).toHaveLength(2);
+  });
+});
+
+describe('importSessionLogs', () => {
+  let tmpDir: string;
+  let store: TraceStore;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-import-'));
+    const tracesDir = path.join(tmpDir, 'traces');
+    const memoryChangesDir = path.join(tmpDir, 'memory-changes');
+    fs.mkdirSync(tracesDir, { recursive: true });
+    fs.mkdirSync(memoryChangesDir, { recursive: true });
+    store = new TraceStore(tracesDir, memoryChangesDir);
+  });
+
+  afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  it('should import new skill calls and return count', () => {
+    const sessDir = path.join(tmpDir, 'sessions');
+    fs.mkdirSync(sessDir);
+    fs.writeFileSync(
+      path.join(sessDir, 'sess-001.jsonl'),
+      JSON.stringify({ timestamp: '2026-02-01T08:00:00Z', input: { path: 'skills/my-skill/SKILL.md' } }) + '\n'
+    );
+
+    const count = importSessionLogs(sessDir, store);
+    expect(count).toBe(1);
+
+    const traces = store.readTracesDateRange(new Date('2026-02-01'), new Date('2026-02-01'));
+    expect(traces).toHaveLength(1);
+    expect(traces[0].skillName).toBe('my-skill');
+    expect(traces[0].status).toBe('success');
+  });
+
+  it('should skip duplicate imports on re-run', () => {
+    const sessDir = path.join(tmpDir, 'sessions');
+    fs.mkdirSync(sessDir);
+    fs.writeFileSync(
+      path.join(sessDir, 'sess-001.jsonl'),
+      JSON.stringify({ timestamp: '2026-02-01T08:00:00Z', input: { path: 'skills/my-skill/SKILL.md' } }) + '\n'
+    );
+
+    const first = importSessionLogs(sessDir, store);
+    expect(first).toBe(1);
+
+    const second = importSessionLogs(sessDir, store);
+    expect(second).toBe(0);
+  });
+
+  it('ClawTrace.importFromSessions should delegate correctly', () => {
+    const sessDir = path.join(tmpDir, 'sessions');
+    fs.mkdirSync(sessDir);
+    fs.writeFileSync(
+      path.join(sessDir, 'sess-001.jsonl'),
+      JSON.stringify({ timestamp: '2026-02-05T10:00:00Z', input: { path: 'skills/cool-skill/SKILL.md' } }) + '\n'
+    );
+
+    const tracesDir = path.join(tmpDir, 'ct-traces');
+    const memDir = path.join(tmpDir, 'ct-mem');
+    fs.mkdirSync(tracesDir, { recursive: true });
+    fs.mkdirSync(memDir, { recursive: true });
+    const ct = new ClawTrace({ tracesDir, memoryChangesDir: memDir });
+
+    const count = ct.importFromSessions(sessDir);
+    expect(count).toBe(1);
   });
 });

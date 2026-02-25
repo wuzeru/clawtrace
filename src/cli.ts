@@ -12,12 +12,16 @@
  *   clawtrace cron                               Show cron job history
  *   clawtrace record --skill <name> --status <s> Record a completed trace
  *                   [--parent <traceId>]       Link to parent trace for sub-agent tree
+ *   clawtrace import --sessions <dir>            Import history from OpenClaw session logs
+ *                   [--since <date>]
+ *   clawtrace stats [--range 7d|30d|all]         Show cross-day aggregate statistics
+ *   clawtrace rank  [--range 7d|30d|all]         Show skill usage ranking
  */
 
 import * as readline from 'readline';
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { ClawTrace } from './core/clawtrace';
+import { ClawTrace, SkillRankEntry } from './core/clawtrace';
 import { detectSkills } from './init/detector';
 import { readInitConfig, writeInitConfig } from './init/config';
 import { injectSkillStats } from './init/injector';
@@ -28,7 +32,7 @@ const program = new Command();
 program
   .name('clawtrace')
   .description('Native observability tool for OpenClaw agents — Skill tracing + Memory changes + Cron history')
-  .version('1.0.0');
+  .version('1.1.0');
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
@@ -498,6 +502,133 @@ program
 
     console.log('');
     console.log(chalk.green(`Updated ${updated} skill file(s) with today's statistics.`));
+    console.log('');
+  });
+
+// ---------------------------------------------------------------------------
+// `clawtrace import --sessions <dir> [--since <date>]`
+// ---------------------------------------------------------------------------
+program
+  .command('import')
+  .description('Import historical skill calls from OpenClaw session JSONL logs')
+  .requiredOption('--sessions <dir>', 'Path to the directory containing *.jsonl session files')
+  .option('--since <date>', 'Only import entries on or after this date (YYYY-MM-DD)')
+  .action((options: { sessions: string; since?: string }) => {
+    let since: Date | undefined;
+    if (options.since) {
+      since = new Date(options.since);
+      if (isNaN(since.getTime())) {
+        console.error(chalk.red(`❌ Invalid date "${options.since}". Use YYYY-MM-DD format.`));
+        process.exit(1);
+      }
+      since.setUTCHours(0, 0, 0, 0);
+    }
+
+    console.log(chalk.blue('\n📥 Importing from OpenClaw session logs...\n'));
+    console.log(chalk.gray(`  Directory: ${options.sessions}`));
+    if (since) console.log(chalk.gray(`  Since:     ${since.toISOString().slice(0, 10)}`));
+    console.log('');
+
+    const ct = new ClawTrace();
+    const imported = ct.importFromSessions(options.sessions, since);
+
+    if (imported === 0) {
+      console.log(chalk.yellow('No new traces found (all entries already imported or directory empty).'));
+    } else {
+      console.log(chalk.green(`✅ Imported ${imported} new trace(s) into memory/traces/.`));
+    }
+    console.log('');
+  });
+
+// ---------------------------------------------------------------------------
+// Helper: parse --range flag into a `since` Date
+// ---------------------------------------------------------------------------
+function parseRange(range: string): Date {
+  const now = new Date();
+  if (range === 'all') {
+    // Go back 10 years as a practical "all time" horizon
+    return new Date(Date.UTC(now.getUTCFullYear() - 10, 0, 1));
+  }
+  const match = range.match(/^(\d+)d$/);
+  if (!match) {
+    console.error(chalk.red(`❌ Invalid range "${range}". Use: 7d, 30d, all`));
+    process.exit(1);
+  }
+  const days = parseInt(match[1], 10);
+  const since = new Date(now);
+  since.setUTCDate(since.getUTCDate() - days + 1);
+  since.setUTCHours(0, 0, 0, 0);
+  return since;
+}
+
+// ---------------------------------------------------------------------------
+// `clawtrace stats [--range 7d|30d|all]`
+// ---------------------------------------------------------------------------
+program
+  .command('stats')
+  .description('Show aggregate skill execution statistics across a date range')
+  .option('--range <range>', 'Date range: 7d, 30d, or all (default: 7d)', '7d')
+  .action((options: { range: string }) => {
+    const since = parseRange(options.range);
+    const ct = new ClawTrace();
+    const summary = ct.getStatsRange(since);
+
+    console.log(chalk.blue(`\n📊 Skill Statistics (${summary.date})\n`));
+    printTraceTable(summary.traces);
+
+    const totalLine =
+      `Total: ${summary.totalSkills} execution(s), ` +
+      `${summary.successCount} success, ` +
+      `${summary.failedCount} failed` +
+      (summary.runningCount > 0 ? `, ${summary.runningCount} running` : '') +
+      ` | Cost: ${formatCost(summary.totalCost)}`;
+    console.log(chalk.cyan(totalLine));
+    console.log('');
+  });
+
+// ---------------------------------------------------------------------------
+// `clawtrace rank [--range 7d|30d|all]`
+// ---------------------------------------------------------------------------
+program
+  .command('rank')
+  .description('Show skill usage ranking sorted by call count')
+  .option('--range <range>', 'Date range: 7d, 30d, or all (default: 30d)', '30d')
+  .action((options: { range: string }) => {
+    const since = parseRange(options.range);
+    const ct = new ClawTrace();
+    const rankings = ct.getRankings(since);
+
+    const rangeLabel = options.range === 'all' ? '全部时间' : `过去 ${options.range}`;
+    console.log(chalk.blue(`\n📊 技能使用排名（${rangeLabel}）\n`));
+
+    if (rankings.length === 0) {
+      console.log(chalk.yellow('No skill executions found in the selected range.'));
+      console.log('');
+      return;
+    }
+
+    const col1 = Math.max(30, ...rankings.map((r: SkillRankEntry) => r.skillName.length)) + 2;
+    const header =
+      '排名'.padEnd(6) +
+      '技能'.padEnd(col1) +
+      '调用次数'.padEnd(12) +
+      '成功率'.padEnd(10) +
+      '平均耗时';
+    console.log(chalk.blue(header));
+    console.log(chalk.gray('─'.repeat(header.length + 4)));
+
+    rankings.forEach((r: SkillRankEntry, idx: number) => {
+      const rank = String(idx + 1).padEnd(6);
+      const successStr = `${r.successRate}%`.padEnd(10);
+      const dur = r.avgDurationMs !== undefined ? formatDuration(r.avgDurationMs) : '-';
+      console.log(
+        rank +
+          r.skillName.padEnd(col1) +
+          String(r.callCount).padEnd(12) +
+          successStr +
+          dur
+      );
+    });
     console.log('');
   });
 
