@@ -8,6 +8,8 @@ import * as path from 'path';
 import { ClawTrace } from '../src/core/clawtrace';
 import { TraceStore } from '../src/trace/store';
 import { TraceRecorder } from '../src/trace/recorder';
+import { detectSkills } from '../src/init/detector';
+import { readInitConfig, writeInitConfig } from '../src/init/config';
 import { SkillTrace, MemoryChange, CronRecord } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -457,5 +459,165 @@ describe('ClawTrace', () => {
     const traces = ct.getSkillTraces('parent-skill');
     expect(traces[0].subAgents).toBeDefined();
     expect(traces[0].subAgents![0].agentName).toBe('child-agent');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectSkills
+// ---------------------------------------------------------------------------
+describe('detectSkills', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-detect-'));
+  });
+
+  afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  it('should return empty array when no skill directories exist', () => {
+    expect(detectSkills(tmpDir)).toEqual([]);
+  });
+
+  it('should detect .ts skill files in skills/ directory', () => {
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(skillsDir);
+    fs.writeFileSync(path.join(skillsDir, 'my-skill.ts'), '');
+    fs.writeFileSync(path.join(skillsDir, 'another-skill.ts'), '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills).toHaveLength(2);
+    expect(skills.map((s) => s.name).sort()).toEqual(['another-skill', 'my-skill']);
+  });
+
+  it('should detect .js skill files', () => {
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(skillsDir);
+    fs.writeFileSync(path.join(skillsDir, 'js-skill.js'), '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills).toHaveLength(1);
+    expect(skills[0].name).toBe('js-skill');
+  });
+
+  it('should exclude index files and test files', () => {
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(skillsDir);
+    fs.writeFileSync(path.join(skillsDir, 'index.ts'), '');
+    fs.writeFileSync(path.join(skillsDir, 'my-skill.test.ts'), '');
+    fs.writeFileSync(path.join(skillsDir, 'my-skill.spec.ts'), '');
+    fs.writeFileSync(path.join(skillsDir, 'my-skill.d.ts'), '');
+    fs.writeFileSync(path.join(skillsDir, 'real-skill.ts'), '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills).toHaveLength(1);
+    expect(skills[0].name).toBe('real-skill');
+  });
+
+  it('should detect skills in src/skills/ directory', () => {
+    const skillsDir = path.join(tmpDir, 'src', 'skills');
+    fs.mkdirSync(skillsDir, { recursive: true });
+    fs.writeFileSync(path.join(skillsDir, 'nested-skill.ts'), '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills).toHaveLength(1);
+    expect(skills[0].name).toBe('nested-skill');
+  });
+
+  it('should include filePath in result', () => {
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(skillsDir);
+    fs.writeFileSync(path.join(skillsDir, 'path-skill.ts'), '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills[0].filePath).toBe(path.join(skillsDir, 'path-skill.ts'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readInitConfig / writeInitConfig
+// ---------------------------------------------------------------------------
+describe('init config', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-cfg-'));
+  });
+
+  afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  it('should return null when config file does not exist', () => {
+    expect(readInitConfig(tmpDir)).toBeNull();
+  });
+
+  it('should write and read back config correctly', () => {
+    writeInitConfig(
+      { wrappedSkills: ['skill-a', 'skill-b'], excludedSkills: ['skill-c'], initialized: true },
+      tmpDir
+    );
+    const config = readInitConfig(tmpDir);
+    expect(config).not.toBeNull();
+    expect(config!.wrappedSkills).toEqual(['skill-a', 'skill-b']);
+    expect(config!.excludedSkills).toEqual(['skill-c']);
+    expect(config!.initialized).toBe(true);
+  });
+
+  it('should return null when config file is malformed JSON', () => {
+    fs.writeFileSync(path.join(tmpDir, '.clawtrace.json'), '{bad json}', 'utf8');
+    expect(readInitConfig(tmpDir)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ClawTrace.shouldWrap
+// ---------------------------------------------------------------------------
+describe('ClawTrace.shouldWrap', () => {
+  let tmpDir: string;
+  let ct: ClawTrace;
+  let cleanup: () => void;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-sw-'));
+    ({ ct, cleanup } = makeClawTrace());
+  });
+
+  afterEach(() => {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('should return true when no config file exists (default behaviour)', () => {
+    expect(ct.shouldWrap('any-skill', tmpDir)).toBe(true);
+  });
+
+  it('should return true for a skill listed in wrappedSkills', () => {
+    writeInitConfig(
+      { wrappedSkills: ['skill-a'], excludedSkills: ['skill-b'], initialized: true },
+      tmpDir
+    );
+    expect(ct.shouldWrap('skill-a', tmpDir)).toBe(true);
+  });
+
+  it('should return false for a skill listed in excludedSkills', () => {
+    writeInitConfig(
+      { wrappedSkills: ['skill-a'], excludedSkills: ['skill-b'], initialized: true },
+      tmpDir
+    );
+    expect(ct.shouldWrap('skill-b', tmpDir)).toBe(false);
+  });
+
+  it('should return false for a skill not in wrappedSkills when config exists', () => {
+    writeInitConfig(
+      { wrappedSkills: ['skill-a'], excludedSkills: [], initialized: true },
+      tmpDir
+    );
+    expect(ct.shouldWrap('unknown-skill', tmpDir)).toBe(false);
+  });
+
+  it('should return true when config exists but initialized is false', () => {
+    writeInitConfig(
+      { wrappedSkills: [], excludedSkills: ['skill-a'], initialized: false },
+      tmpDir
+    );
+    expect(ct.shouldWrap('skill-a', tmpDir)).toBe(true);
   });
 });

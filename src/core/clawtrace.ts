@@ -8,6 +8,7 @@
 import * as path from 'path';
 import { TraceStore } from '../trace/store';
 import { TraceRecorder } from '../trace/recorder';
+import { readInitConfig } from '../init/config';
 import {
   ClawTraceConfig,
   DailySummary,
@@ -205,5 +206,24 @@ export class ClawTrace {
    */
   getLastSkillTrace(skillName: string, date?: Date): SkillTrace | undefined {
     return this.getSkillTraces(skillName, date)[0];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Init config — `clawtrace init`
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Check whether a named skill should be wrapped based on the `.clawtrace.json`
+   * config written by `clawtrace init`.
+   *
+   * - If no config file exists (init not yet run), returns `true` so that
+   *   existing integrations continue to work unchanged.
+   * - If the config exists, returns `true` only when the skill appears in
+   *   `wrappedSkills`.
+   */
+  shouldWrap(skillName: string, rootDir?: string): boolean {
+    const config = readInitConfig(rootDir);
+    if (!config || !config.initialized) return true;
+    return config.wrappedSkills.includes(skillName);
   }
 }

@@ -3,6 +3,7 @@
  * ClawTrace CLI — Native observability tool for OpenClaw agents
  *
  * Commands:
+ *   clawtrace init                               Detect skills and configure wrapping
  *   clawtrace today                              Show today's skill executions
  *   clawtrace memory [--last <hours>]            Show memory change history
  *   clawtrace session [--label <name>]           Show session execution tree
@@ -11,9 +12,12 @@
  *   clawtrace record --skill <name> --status <s> Record a completed trace
  */
 
+import * as readline from 'readline';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { ClawTrace } from './core/clawtrace';
+import { detectSkills } from './init/detector';
+import { readInitConfig, writeInitConfig } from './init/config';
 import { SkillTrace, MemoryChange, CronRecord, TraceSession, TraceStatus } from './types';
 
 const program = new Command();
@@ -330,6 +334,105 @@ program
     });
 
     console.log(chalk.green(`✅ Trace recorded: ${id}`));
+  });
+
+// ---------------------------------------------------------------------------
+// `clawtrace init`
+// ---------------------------------------------------------------------------
+program
+  .command('init')
+  .description('Detect skills in the project and configure which ones to wrap')
+  .option('--root <dir>', 'Project root directory (defaults to cwd)')
+  .action(async (options: { root?: string }) => {
+    const rootDir = options.root ?? process.cwd();
+
+    console.log(chalk.blue('\n🔍 Scanning for skills in the project...\n'));
+
+    const skills = detectSkills(rootDir);
+
+    if (skills.length === 0) {
+      console.log(chalk.yellow('No skill files found.'));
+      console.log(
+        chalk.gray(
+          'ClawTrace looks for .ts/.js files in: skills/, src/skills/, skill/, src/skill/'
+        )
+      );
+      console.log(
+        chalk.gray(
+          'Add your skill files to one of these directories, then re-run `clawtrace init`.'
+        )
+      );
+      console.log('');
+      return;
+    }
+
+    console.log(chalk.green(`Found ${skills.length} skill(s):\n`));
+    for (const s of skills) {
+      const rel = s.filePath.startsWith(rootDir)
+        ? s.filePath.slice(rootDir.length + 1)
+        : s.filePath;
+      console.log(`  • ${chalk.white(s.name.padEnd(35))} ${chalk.gray(rel)}`);
+    }
+    console.log('');
+    console.log(chalk.cyan('For each skill, choose whether to wrap it with ClawTrace tracing.'));
+    console.log(chalk.gray('(Press Enter to accept the default shown in uppercase)\n'));
+
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+    // Buffer lines already queued (handles piped / non-TTY stdin) and resolve
+    // pending question promises as new lines arrive.
+    const lineBuffer: string[] = [];
+    const lineWaiters: Array<(line: string) => void> = [];
+    rl.on('line', (line) => {
+      if (lineWaiters.length > 0) {
+        lineWaiters.shift()!(line);
+      } else {
+        lineBuffer.push(line);
+      }
+    });
+
+    const ask = (question: string): Promise<string> => {
+      process.stdout.write(question);
+      if (lineBuffer.length > 0) {
+        const line = lineBuffer.shift()!;
+        process.stdout.write(line + '\n');
+        return Promise.resolve(line);
+      }
+      return new Promise((resolve) => lineWaiters.push(resolve));
+    };
+
+    const wrappedSkills: string[] = [];
+    const excludedSkills: string[] = [];
+
+    for (const skill of skills) {
+      const answer = await ask(`Wrap ${chalk.white(skill.name)}? (${chalk.green('Y')}/n): `);
+      const skip = answer.trim().toLowerCase() === 'n';
+      if (skip) {
+        excludedSkills.push(skill.name);
+      } else {
+        wrappedSkills.push(skill.name);
+      }
+    }
+
+    rl.close();
+    console.log('');
+
+    writeInitConfig({ wrappedSkills, excludedSkills, initialized: true }, rootDir);
+
+    console.log(chalk.green('✅ Configuration saved to .clawtrace.json\n'));
+    if (wrappedSkills.length > 0) {
+      console.log(`  ${chalk.green('Wrapped:')}  ${wrappedSkills.join(', ')}`);
+    }
+    if (excludedSkills.length > 0) {
+      console.log(`  ${chalk.yellow('Skipped:')}  ${excludedSkills.join(', ')}`);
+    }
+    console.log('');
+    console.log(
+      chalk.gray(
+        'Use ct.shouldWrap(skillName) in your skill code to check this configuration.'
+      )
+    );
+    console.log('');
   });
 
 program.parse(process.argv);
