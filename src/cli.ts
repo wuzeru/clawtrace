@@ -12,7 +12,7 @@
  */
 
 import { Command } from 'commander';
-import * as chalk from 'chalk';
+import chalk from 'chalk';
 import { ClawTrace } from './core/clawtrace';
 import { SkillTrace, MemoryChange, CronRecord, TraceSession, TraceStatus } from './types';
 
