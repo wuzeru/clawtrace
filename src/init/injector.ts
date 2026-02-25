@@ -80,6 +80,7 @@ export function buildStatsBlock(traces: SkillTrace[], skillName: string = 'SKILL
     `> clawtrace record --skill ${skillName} --status success --duration <ms>`,
     '> ```',
     '> If the execution failed, use `--status failed --error "<message>"`.',
+    '> If this skill was triggered by a parent skill, add `--parent <parentTraceId>` to link them.',
     STATS_END_MARKER,
   ].join('\n');
 }

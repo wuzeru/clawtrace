@@ -69,6 +69,7 @@ export class ClawTrace {
     cost?: number;
     toolCalls?: ToolCall[];
     subAgents?: SubAgentCall[];
+    parentId?: string;
   }): string {
     return this.recorder.recordTrace(params);
   }
@@ -206,6 +207,39 @@ export class ClawTrace {
    */
   getLastSkillTrace(skillName: string, date?: Date): SkillTrace | undefined {
     return this.getSkillTraces(skillName, date)[0];
+  }
+
+  /**
+   * Build a sub-agent tree for a given trace by finding all traces that
+   * reference it (directly or transitively) via `parentId`.
+   *
+   * Returns SubAgentCall[] representing the children tree. If the trace
+   * already has explicit `subAgents`, those are returned as-is. Otherwise,
+   * the tree is auto-assembled from JSONL records with matching parentId.
+   */
+  getTraceTree(traceId: string, date?: Date): SubAgentCall[] {
+    const allTraces = this.store.readTraces(date);
+    const root = allTraces.find((t) => t.id === traceId);
+
+    // If the root trace already has explicit subAgents, return them
+    if (root?.subAgents && root.subAgents.length > 0) {
+      return root.subAgents;
+    }
+
+    // Build tree from parentId references
+    const buildChildren = (parentId: string): SubAgentCall[] => {
+      const children = allTraces.filter((t) => t.parentId === parentId);
+      return children.map((child) => ({
+        agentName: child.skillName,
+        startTime: child.startTime,
+        endTime: child.endTime,
+        durationMs: child.durationMs,
+        status: child.status,
+        children: buildChildren(child.id),
+      }));
+    };
+
+    return buildChildren(traceId);
   }
 
   // ---------------------------------------------------------------------------

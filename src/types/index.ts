@@ -58,6 +58,8 @@ export interface SkillTrace {
   cost?: number;
   toolCalls?: ToolCall[];
   subAgents?: SubAgentCall[];
+  /** Parent trace ID for auto-discovery of sub-agent trees */
+  parentId?: string;
 }
 
 // ---------------------------------------------------------------------------

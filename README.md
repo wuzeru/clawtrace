@@ -332,6 +332,30 @@ await ct.wrapCron('daily-cleanup', async () => {
 }, '0 3 * * *');
 ```
 
+### Sub-agent Call Tree Auto-Discovery
+
+When a skill triggers sub-tasks, link them with `--parent` so ClawTrace can automatically build the execution tree:
+
+```bash
+# Parent skill finishes — capture its trace ID
+PARENT_ID=$(clawtrace record --skill data-collection --status success --duration 5000)
+
+# Each sub-task reports with --parent to link to the parent
+clawtrace record --skill fetch-api --status success --duration 2000 --parent $PARENT_ID
+clawtrace record --skill parse-results --status success --duration 1500 --parent $PARENT_ID
+```
+
+`clawtrace detail --skill data-collection` will then show the auto-discovered tree:
+
+```
+🔍 Skill Detail: data-collection
+  Sub-agents (auto-discovered):
+    ✅ fetch-api (2s)
+    ✅ parse-results (1s)
+```
+
+Trees can be nested to any depth — just pass the child's trace ID as `--parent` for the grandchild.
+
 ---
 
 ## 📂 File Structure
@@ -376,6 +400,7 @@ memory/memory-changes/YYYY-MM-DD.jsonl  # Memory change records
   "durationMs": 222000,
   "status": "success",
   "cost": 0.12,
+  "parentId": "lf2k1b-m3n4op",
   "toolCalls": [
     { "tool": "web_search", "count": 8 },
     { "tool": "web_fetch", "count": 3 }

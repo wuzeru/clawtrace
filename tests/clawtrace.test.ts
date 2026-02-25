@@ -461,6 +461,114 @@ describe('ClawTrace', () => {
     expect(traces[0].subAgents).toBeDefined();
     expect(traces[0].subAgents![0].agentName).toBe('child-agent');
   });
+
+  it('should record a trace with parentId', () => {
+    const parentId = ct.recordTrace({
+      skillName: 'parent-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 5000,
+    });
+    const childId = ct.recordTrace({
+      skillName: 'child-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 2000,
+      parentId,
+    });
+    const traces = ct.getSkillTraces('child-task');
+    expect(traces[0].parentId).toBe(parentId);
+  });
+
+  it('should auto-discover sub-agent tree from parentId references', () => {
+    const parentId = ct.recordTrace({
+      skillName: 'parent-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 5000,
+    });
+    ct.recordTrace({
+      skillName: 'child-a',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 2000,
+      parentId,
+    });
+    ct.recordTrace({
+      skillName: 'child-b',
+      status: 'failed',
+      startTime: new Date().toISOString(),
+      durationMs: 1500,
+      parentId,
+    });
+
+    const tree = ct.getTraceTree(parentId);
+    expect(tree).toHaveLength(2);
+    expect(tree.map((n) => n.agentName).sort()).toEqual(['child-a', 'child-b']);
+    expect(tree.find((n) => n.agentName === 'child-a')?.status).toBe('success');
+    expect(tree.find((n) => n.agentName === 'child-b')?.status).toBe('failed');
+  });
+
+  it('should auto-discover nested sub-agent trees (grandchildren)', () => {
+    const parentId = ct.recordTrace({
+      skillName: 'root-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 10000,
+    });
+    const childId = ct.recordTrace({
+      skillName: 'middle-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 5000,
+      parentId,
+    });
+    ct.recordTrace({
+      skillName: 'leaf-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 1000,
+      parentId: childId,
+    });
+
+    const tree = ct.getTraceTree(parentId);
+    expect(tree).toHaveLength(1);
+    expect(tree[0].agentName).toBe('middle-task');
+    expect(tree[0].children).toHaveLength(1);
+    expect(tree[0].children![0].agentName).toBe('leaf-task');
+  });
+
+  it('should return empty tree when no children exist', () => {
+    const traceId = ct.recordTrace({
+      skillName: 'lonely-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+    });
+    const tree = ct.getTraceTree(traceId);
+    expect(tree).toEqual([]);
+  });
+
+  it('should prefer explicit subAgents over auto-discovered tree', () => {
+    const parentId = ct.recordTrace({
+      skillName: 'explicit-parent',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      subAgents: [
+        { agentName: 'explicit-child', startTime: new Date().toISOString(), status: 'success', durationMs: 500 },
+      ],
+    });
+    ct.recordTrace({
+      skillName: 'auto-child',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      parentId,
+    });
+
+    const tree = ct.getTraceTree(parentId);
+    // Should return the explicit subAgents, not the auto-discovered one
+    expect(tree).toHaveLength(1);
+    expect(tree[0].agentName).toBe('explicit-child');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -680,6 +788,11 @@ describe('buildStatsBlock', () => {
     ];
     const block = buildStatsBlock(traces);
     expect(block).toContain('10:30 UTC ✅');
+  });
+
+  it('should include --parent hint in reporting instructions', () => {
+    const block = buildStatsBlock([], 'my-skill');
+    expect(block).toContain('--parent <parentTraceId>');
   });
 });
 

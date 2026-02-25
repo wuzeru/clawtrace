@@ -11,6 +11,7 @@
  *   clawtrace detail --skill <name> [--last]     Show detail for a skill
  *   clawtrace cron                               Show cron job history
  *   clawtrace record --skill <name> --status <s> Record a completed trace
+ *                   [--parent <traceId>]       Link to parent trace for sub-agent tree
  */
 
 import * as readline from 'readline';
@@ -240,6 +241,13 @@ program
       if (t.subAgents && t.subAgents.length > 0) {
         console.log(chalk.gray('  Sub-agents:'));
         printSubAgentTree(t.subAgents, '    ');
+      } else {
+        // Auto-discover sub-agent tree from parentId references
+        const autoTree = ct.getTraceTree(t.id);
+        if (autoTree.length > 0) {
+          console.log(chalk.gray('  Sub-agents (auto-discovered):'));
+          printSubAgentTree(autoTree, '    ');
+        }
       }
       console.log('');
     }
@@ -306,6 +314,7 @@ program
   .option('--cost <usd>', 'Estimated cost in USD')
   .option('--session <label>', 'Session label')
   .option('--error <message>', 'Error message (for failed traces)')
+  .option('--parent <traceId>', 'Parent trace ID (for sub-agent tree auto-discovery)')
   .action((options: {
     skill: string;
     status: string;
@@ -313,6 +322,7 @@ program
     cost?: string;
     session?: string;
     error?: string;
+    parent?: string;
   }) => {
     const allowedStatuses = ['success', 'failed', 'running'];
     if (!allowedStatuses.includes(options.status)) {
@@ -333,9 +343,10 @@ program
       sessionLabel: options.session,
       error: options.error,
       cost,
+      parentId: options.parent,
     });
 
-    console.log(chalk.green(`✅ Trace recorded: ${id}`));
+    console.log(id);
   });
 
 // ---------------------------------------------------------------------------
