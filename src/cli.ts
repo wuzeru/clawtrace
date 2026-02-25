@@ -3,17 +3,24 @@
  * ClawTrace CLI — Native observability tool for OpenClaw agents
  *
  * Commands:
+ *   clawtrace init                               Detect skills and configure wrapping
+ *   clawtrace inject [--skill <name>]            Inject run statistics into SKILL.md files
  *   clawtrace today                              Show today's skill executions
  *   clawtrace memory [--last <hours>]            Show memory change history
  *   clawtrace session [--label <name>]           Show session execution tree
  *   clawtrace detail --skill <name> [--last]     Show detail for a skill
  *   clawtrace cron                               Show cron job history
  *   clawtrace record --skill <name> --status <s> Record a completed trace
+ *                   [--parent <traceId>]       Link to parent trace for sub-agent tree
  */
 
+import * as readline from 'readline';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { ClawTrace } from './core/clawtrace';
+import { detectSkills } from './init/detector';
+import { readInitConfig, writeInitConfig } from './init/config';
+import { injectSkillStats } from './init/injector';
 import { SkillTrace, MemoryChange, CronRecord, TraceSession, TraceStatus } from './types';
 
 const program = new Command();
@@ -234,6 +241,13 @@ program
       if (t.subAgents && t.subAgents.length > 0) {
         console.log(chalk.gray('  Sub-agents:'));
         printSubAgentTree(t.subAgents, '    ');
+      } else {
+        // Auto-discover sub-agent tree from parentId references
+        const autoTree = ct.getTraceTree(t.id);
+        if (autoTree.length > 0) {
+          console.log(chalk.gray('  Sub-agents (auto-discovered):'));
+          printSubAgentTree(autoTree, '    ');
+        }
       }
       console.log('');
     }
@@ -300,6 +314,7 @@ program
   .option('--cost <usd>', 'Estimated cost in USD')
   .option('--session <label>', 'Session label')
   .option('--error <message>', 'Error message (for failed traces)')
+  .option('--parent <traceId>', 'Parent trace ID (for sub-agent tree auto-discovery)')
   .action((options: {
     skill: string;
     status: string;
@@ -307,6 +322,7 @@ program
     cost?: string;
     session?: string;
     error?: string;
+    parent?: string;
   }) => {
     const allowedStatuses = ['success', 'failed', 'running'];
     if (!allowedStatuses.includes(options.status)) {
@@ -327,9 +343,162 @@ program
       sessionLabel: options.session,
       error: options.error,
       cost,
+      parentId: options.parent,
     });
 
-    console.log(chalk.green(`✅ Trace recorded: ${id}`));
+    console.log(id);
+  });
+
+// ---------------------------------------------------------------------------
+// `clawtrace init`
+// ---------------------------------------------------------------------------
+program
+  .command('init')
+  .description('Detect skills in the project and configure which ones to wrap')
+  .option('--root <dir>', 'Project root directory (defaults to cwd)')
+  .action(async (options: { root?: string }) => {
+    const rootDir = options.root ?? process.cwd();
+
+    console.log(chalk.blue('\n🔍 Scanning for skills in the project...\n'));
+
+    const skills = detectSkills(rootDir);
+
+    if (skills.length === 0) {
+      console.log(chalk.yellow('No skill files found.'));
+      console.log(
+        chalk.gray(
+          'ClawTrace looks for SKILL.md files (or *.md files) in: skills/, src/skills/, skill/, src/skill/'
+        )
+      );
+      console.log(
+        chalk.gray(
+          'Add your OpenClaw skill directories (each with a SKILL.md) there, then re-run `clawtrace init`.'
+        )
+      );
+      console.log('');
+      return;
+    }
+
+    console.log(chalk.green(`Found ${skills.length} skill(s):\n`));
+    for (const s of skills) {
+      const rel = s.filePath.startsWith(rootDir)
+        ? s.filePath.slice(rootDir.length + 1)
+        : s.filePath;
+      console.log(`  • ${chalk.white(s.name.padEnd(35))} ${chalk.gray(rel)}`);
+    }
+    console.log('');
+    console.log(chalk.cyan('For each skill, choose whether to wrap it with ClawTrace tracing.'));
+    console.log(chalk.gray('(Press Enter to accept the default shown in uppercase)\n'));
+
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+    // Buffer lines already queued (handles piped / non-TTY stdin) and resolve
+    // pending question promises as new lines arrive.
+    const lineBuffer: string[] = [];
+    const lineWaiters: Array<(line: string) => void> = [];
+    rl.on('line', (line) => {
+      if (lineWaiters.length > 0) {
+        lineWaiters.shift()!(line);
+      } else {
+        lineBuffer.push(line);
+      }
+    });
+
+    const ask = (question: string): Promise<string> => {
+      process.stdout.write(question);
+      if (lineBuffer.length > 0) {
+        const line = lineBuffer.shift()!;
+        process.stdout.write(line + '\n');
+        return Promise.resolve(line);
+      }
+      return new Promise((resolve) => lineWaiters.push(resolve));
+    };
+
+    const wrappedSkills: string[] = [];
+    const excludedSkills: string[] = [];
+
+    for (const skill of skills) {
+      const answer = await ask(`Wrap ${chalk.white(skill.name)}? (${chalk.green('Y')}/n): `);
+      const skip = answer.trim().toLowerCase() === 'n';
+      if (skip) {
+        excludedSkills.push(skill.name);
+      } else {
+        wrappedSkills.push(skill.name);
+      }
+    }
+
+    rl.close();
+    console.log('');
+
+    writeInitConfig({ wrappedSkills, excludedSkills, initialized: true }, rootDir);
+
+    console.log(chalk.green('✅ Configuration saved to .clawtrace.json\n'));
+    if (wrappedSkills.length > 0) {
+      console.log(`  ${chalk.green('Wrapped:')}  ${wrappedSkills.join(', ')}`);
+    }
+    if (excludedSkills.length > 0) {
+      console.log(`  ${chalk.yellow('Skipped:')}  ${excludedSkills.join(', ')}`);
+    }
+    console.log('');
+    console.log(
+      chalk.gray(
+        'Use ct.shouldWrap(skillName) in your skill code to check this configuration.'
+      )
+    );
+    console.log('');
+  });
+
+// ---------------------------------------------------------------------------
+// `clawtrace inject [--skill <name>] [--root <dir>]`
+// ---------------------------------------------------------------------------
+program
+  .command('inject')
+  .description("Inject today's run statistics into SKILL.md files so agents can read them")
+  .option('--skill <name>', 'Inject stats only for this skill name')
+  .option('--root <dir>', 'Project root directory (defaults to cwd)')
+  .action((options: { skill?: string; root?: string }) => {
+    const rootDir = options.root ?? process.cwd();
+    const ct = new ClawTrace();
+
+    const skills = detectSkills(rootDir);
+
+    if (skills.length === 0) {
+      console.log(chalk.yellow('\nNo skill files found to update.'));
+      console.log(
+        chalk.gray(
+          'ClawTrace looks for SKILL.md files in: skills/, src/skills/, skill/, src/skill/'
+        )
+      );
+      console.log('');
+      return;
+    }
+
+    const targets = options.skill
+      ? skills.filter((s) => s.name === options.skill)
+      : skills;
+
+    if (targets.length === 0) {
+      console.log(chalk.yellow(`\nSkill "${options.skill}" not found.`));
+      console.log('');
+      return;
+    }
+
+    console.log(chalk.blue('\n📝 Injecting ClawTrace statistics into SKILL.md files...\n'));
+
+    let updated = 0;
+    for (const skill of targets) {
+      const traces = ct.getSkillTraces(skill.name);
+      injectSkillStats(skill.filePath, skill.name, traces);
+      const rel = skill.filePath.startsWith(rootDir)
+        ? skill.filePath.slice(rootDir.length + 1)
+        : skill.filePath;
+      console.log(`  ✅ ${chalk.white(skill.name.padEnd(35))} ${chalk.gray(rel)}`);
+      updated++;
+    }
+
+    console.log('');
+    console.log(chalk.green(`Updated ${updated} skill file(s) with today's statistics.`));
+    console.log('');
   });
 
 program.parse(process.argv);

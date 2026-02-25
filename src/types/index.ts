@@ -58,6 +58,8 @@ export interface SkillTrace {
   cost?: number;
   toolCalls?: ToolCall[];
   subAgents?: SubAgentCall[];
+  /** Parent trace ID for auto-discovery of sub-agent trees */
+  parentId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,6 +118,18 @@ export interface ClawTraceConfig {
    * Defaults to "memory/memory-changes" relative to cwd.
    */
   memoryChangesDir?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Init config — persisted in .clawtrace.json after `clawtrace init`
+// ---------------------------------------------------------------------------
+export interface ClawTraceInitConfig {
+  /** Skill names that should be wrapped with ClawTrace tracing. */
+  wrappedSkills: string[];
+  /** Skill names explicitly excluded from wrapping. */
+  excludedSkills: string[];
+  /** Whether `clawtrace init` has been completed at least once. */
+  initialized: boolean;
 }
 
 // ---------------------------------------------------------------------------

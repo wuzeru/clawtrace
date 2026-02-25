@@ -99,6 +99,7 @@ export class TraceRecorder {
     cost?: number;
     toolCalls?: ToolCall[];
     subAgents?: SubAgentCall[];
+    parentId?: string;
   }): string {
     const id = generateId();
     const trace: SkillTrace = { id, ...params };

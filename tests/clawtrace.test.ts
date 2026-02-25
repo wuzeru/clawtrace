@@ -8,6 +8,9 @@ import * as path from 'path';
 import { ClawTrace } from '../src/core/clawtrace';
 import { TraceStore } from '../src/trace/store';
 import { TraceRecorder } from '../src/trace/recorder';
+import { detectSkills } from '../src/init/detector';
+import { readInitConfig, writeInitConfig } from '../src/init/config';
+import { injectSkillStats, buildStatsBlock, STATS_START_MARKER, STATS_END_MARKER } from '../src/init/injector';
 import { SkillTrace, MemoryChange, CronRecord } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -457,5 +460,398 @@ describe('ClawTrace', () => {
     const traces = ct.getSkillTraces('parent-skill');
     expect(traces[0].subAgents).toBeDefined();
     expect(traces[0].subAgents![0].agentName).toBe('child-agent');
+  });
+
+  it('should record a trace with parentId', () => {
+    const parentId = ct.recordTrace({
+      skillName: 'parent-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 5000,
+    });
+    const childId = ct.recordTrace({
+      skillName: 'child-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 2000,
+      parentId,
+    });
+    const traces = ct.getSkillTraces('child-task');
+    expect(traces[0].parentId).toBe(parentId);
+  });
+
+  it('should auto-discover sub-agent tree from parentId references', () => {
+    const parentId = ct.recordTrace({
+      skillName: 'parent-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 5000,
+    });
+    ct.recordTrace({
+      skillName: 'child-a',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 2000,
+      parentId,
+    });
+    ct.recordTrace({
+      skillName: 'child-b',
+      status: 'failed',
+      startTime: new Date().toISOString(),
+      durationMs: 1500,
+      parentId,
+    });
+
+    const tree = ct.getTraceTree(parentId);
+    expect(tree).toHaveLength(2);
+    expect(tree.map((n) => n.agentName).sort()).toEqual(['child-a', 'child-b']);
+    expect(tree.find((n) => n.agentName === 'child-a')?.status).toBe('success');
+    expect(tree.find((n) => n.agentName === 'child-b')?.status).toBe('failed');
+  });
+
+  it('should auto-discover nested sub-agent trees (grandchildren)', () => {
+    const parentId = ct.recordTrace({
+      skillName: 'root-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 10000,
+    });
+    const childId = ct.recordTrace({
+      skillName: 'middle-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 5000,
+      parentId,
+    });
+    ct.recordTrace({
+      skillName: 'leaf-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      durationMs: 1000,
+      parentId: childId,
+    });
+
+    const tree = ct.getTraceTree(parentId);
+    expect(tree).toHaveLength(1);
+    expect(tree[0].agentName).toBe('middle-task');
+    expect(tree[0].children).toHaveLength(1);
+    expect(tree[0].children![0].agentName).toBe('leaf-task');
+  });
+
+  it('should return empty tree when no children exist', () => {
+    const traceId = ct.recordTrace({
+      skillName: 'lonely-task',
+      status: 'success',
+      startTime: new Date().toISOString(),
+    });
+    const tree = ct.getTraceTree(traceId);
+    expect(tree).toEqual([]);
+  });
+
+  it('should prefer explicit subAgents over auto-discovered tree', () => {
+    const parentId = ct.recordTrace({
+      skillName: 'explicit-parent',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      subAgents: [
+        { agentName: 'explicit-child', startTime: new Date().toISOString(), status: 'success', durationMs: 500 },
+      ],
+    });
+    ct.recordTrace({
+      skillName: 'auto-child',
+      status: 'success',
+      startTime: new Date().toISOString(),
+      parentId,
+    });
+
+    const tree = ct.getTraceTree(parentId);
+    // Should return the explicit subAgents, not the auto-discovered one
+    expect(tree).toHaveLength(1);
+    expect(tree[0].agentName).toBe('explicit-child');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectSkills
+// ---------------------------------------------------------------------------
+describe('detectSkills', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-detect-'));
+  });
+
+  afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  it('should return empty array when no skill directories exist', () => {
+    expect(detectSkills(tmpDir)).toEqual([]);
+  });
+
+  it('should detect directory-based skills (skills/<name>/SKILL.md)', () => {
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(path.join(skillsDir, 'my-skill'), { recursive: true });
+    fs.writeFileSync(path.join(skillsDir, 'my-skill', 'SKILL.md'), '');
+    fs.mkdirSync(path.join(skillsDir, 'another-skill'));
+    fs.writeFileSync(path.join(skillsDir, 'another-skill', 'SKILL.md'), '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills).toHaveLength(2);
+    expect(skills.map((s) => s.name).sort()).toEqual(['another-skill', 'my-skill']);
+  });
+
+  it('should detect flat .md skill files in skills/ directory', () => {
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(skillsDir);
+    fs.writeFileSync(path.join(skillsDir, 'flat-skill.md'), '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills).toHaveLength(1);
+    expect(skills[0].name).toBe('flat-skill');
+  });
+
+  it('should exclude well-known non-skill md files', () => {
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(skillsDir);
+    fs.writeFileSync(path.join(skillsDir, 'README.md'), '');
+    fs.writeFileSync(path.join(skillsDir, 'CHANGELOG.md'), '');
+    fs.writeFileSync(path.join(skillsDir, 'AGENTS.md'), '');
+    fs.writeFileSync(path.join(skillsDir, 'real-skill.md'), '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills).toHaveLength(1);
+    expect(skills[0].name).toBe('real-skill');
+  });
+
+  it('should skip directories without a SKILL.md', () => {
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(path.join(skillsDir, 'incomplete-skill'), { recursive: true });
+    fs.writeFileSync(path.join(skillsDir, 'incomplete-skill', 'README.md'), '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills).toHaveLength(0);
+  });
+
+  it('should detect skills in src/skills/ directory', () => {
+    const skillsDir = path.join(tmpDir, 'src', 'skills');
+    fs.mkdirSync(path.join(skillsDir, 'nested-skill'), { recursive: true });
+    fs.writeFileSync(path.join(skillsDir, 'nested-skill', 'SKILL.md'), '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills).toHaveLength(1);
+    expect(skills[0].name).toBe('nested-skill');
+  });
+
+  it('should include filePath pointing to SKILL.md for directory-based skills', () => {
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(path.join(skillsDir, 'path-skill'), { recursive: true });
+    const skillMd = path.join(skillsDir, 'path-skill', 'SKILL.md');
+    fs.writeFileSync(skillMd, '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills[0].filePath).toBe(skillMd);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readInitConfig / writeInitConfig
+// ---------------------------------------------------------------------------
+describe('init config', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-cfg-'));
+  });
+
+  afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  it('should return null when config file does not exist', () => {
+    expect(readInitConfig(tmpDir)).toBeNull();
+  });
+
+  it('should write and read back config correctly', () => {
+    writeInitConfig(
+      { wrappedSkills: ['skill-a', 'skill-b'], excludedSkills: ['skill-c'], initialized: true },
+      tmpDir
+    );
+    const config = readInitConfig(tmpDir);
+    expect(config).not.toBeNull();
+    expect(config!.wrappedSkills).toEqual(['skill-a', 'skill-b']);
+    expect(config!.excludedSkills).toEqual(['skill-c']);
+    expect(config!.initialized).toBe(true);
+  });
+
+  it('should return null when config file is malformed JSON', () => {
+    fs.writeFileSync(path.join(tmpDir, '.clawtrace.json'), '{bad json}', 'utf8');
+    expect(readInitConfig(tmpDir)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ClawTrace.shouldWrap
+// ---------------------------------------------------------------------------
+describe('ClawTrace.shouldWrap', () => {
+  let tmpDir: string;
+  let ct: ClawTrace;
+  let cleanup: () => void;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-sw-'));
+    ({ ct, cleanup } = makeClawTrace());
+  });
+
+  afterEach(() => {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('should return true when no config file exists (default behaviour)', () => {
+    expect(ct.shouldWrap('any-skill', tmpDir)).toBe(true);
+  });
+
+  it('should return true for a skill listed in wrappedSkills', () => {
+    writeInitConfig(
+      { wrappedSkills: ['skill-a'], excludedSkills: ['skill-b'], initialized: true },
+      tmpDir
+    );
+    expect(ct.shouldWrap('skill-a', tmpDir)).toBe(true);
+  });
+
+  it('should return false for a skill listed in excludedSkills', () => {
+    writeInitConfig(
+      { wrappedSkills: ['skill-a'], excludedSkills: ['skill-b'], initialized: true },
+      tmpDir
+    );
+    expect(ct.shouldWrap('skill-b', tmpDir)).toBe(false);
+  });
+
+  it('should return false for a skill not in wrappedSkills when config exists', () => {
+    writeInitConfig(
+      { wrappedSkills: ['skill-a'], excludedSkills: [], initialized: true },
+      tmpDir
+    );
+    expect(ct.shouldWrap('unknown-skill', tmpDir)).toBe(false);
+  });
+
+  it('should return true when config exists but initialized is false', () => {
+    writeInitConfig(
+      { wrappedSkills: [], excludedSkills: ['skill-a'], initialized: false },
+      tmpDir
+    );
+    expect(ct.shouldWrap('skill-a', tmpDir)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// injectSkillStats / buildStatsBlock
+// ---------------------------------------------------------------------------
+describe('buildStatsBlock', () => {
+  it('should include start and end markers', () => {
+    const block = buildStatsBlock([]);
+    expect(block).toContain(STATS_START_MARKER);
+    expect(block).toContain(STATS_END_MARKER);
+  });
+
+  it('should show zero counts when no traces provided', () => {
+    const block = buildStatsBlock([]);
+    expect(block).toContain('| Runs today | 0 |');
+    expect(block).toContain('| ✅ Success | 0 |');
+    expect(block).toContain('| ❌ Failed | 0 |');
+    expect(block).toContain('| 🕐 Last run | - |');
+  });
+
+  it('should count success and failed traces correctly', () => {
+    const traces: SkillTrace[] = [
+      { id: '1', skillName: 'sk', startTime: '2026-02-25T08:00:00Z', status: 'success', durationMs: 5000 },
+      { id: '2', skillName: 'sk', startTime: '2026-02-25T09:00:00Z', status: 'failed', durationMs: 3000 },
+      { id: '3', skillName: 'sk', startTime: '2026-02-25T10:00:00Z', status: 'success', durationMs: 7000 },
+    ];
+    const block = buildStatsBlock(traces);
+    expect(block).toContain('| Runs today | 3 |');
+    expect(block).toContain('| ✅ Success | 2 |');
+    expect(block).toContain('| ❌ Failed | 1 |');
+  });
+
+  it('should compute average duration correctly', () => {
+    const traces: SkillTrace[] = [
+      { id: '1', skillName: 'sk', startTime: '2026-02-25T08:00:00Z', status: 'success', durationMs: 4000 },
+      { id: '2', skillName: 'sk', startTime: '2026-02-25T09:00:00Z', status: 'success', durationMs: 8000 },
+    ];
+    const block = buildStatsBlock(traces);
+    // avg = 6000ms = 6s
+    expect(block).toContain('| ⏱ Avg duration | 6s |');
+  });
+
+  it('should show last run from the most recent trace by startTime', () => {
+    const traces: SkillTrace[] = [
+      { id: '1', skillName: 'sk', startTime: '2026-02-25T07:00:00Z', status: 'failed' },
+      { id: '2', skillName: 'sk', startTime: '2026-02-25T10:30:00Z', status: 'success' },
+    ];
+    const block = buildStatsBlock(traces);
+    expect(block).toContain('10:30 UTC ✅');
+  });
+
+  it('should include --parent hint in reporting instructions', () => {
+    const block = buildStatsBlock([], 'my-skill');
+    expect(block).toContain('--parent <parentTraceId>');
+  });
+});
+
+describe('injectSkillStats', () => {
+  let tmpDir: string;
+  let skillFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-inject-'));
+    skillFile = path.join(tmpDir, 'SKILL.md');
+  });
+
+  afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  it('should do nothing when the file does not exist', () => {
+    expect(() => injectSkillStats(path.join(tmpDir, 'MISSING.md'), 'sk', [])).not.toThrow();
+  });
+
+  it('should append a stats block to an empty file', () => {
+    fs.writeFileSync(skillFile, '');
+    injectSkillStats(skillFile, 'sk', []);
+    const content = fs.readFileSync(skillFile, 'utf8');
+    expect(content).toContain(STATS_START_MARKER);
+    expect(content).toContain(STATS_END_MARKER);
+    expect(content).toContain('## 📊 ClawTrace Statistics');
+  });
+
+  it('should append after existing content with a blank line separator', () => {
+    fs.writeFileSync(skillFile, '# My Skill\nDoes stuff.\n');
+    injectSkillStats(skillFile, 'sk', []);
+    const content = fs.readFileSync(skillFile, 'utf8');
+    expect(content.startsWith('# My Skill\nDoes stuff.\n')).toBe(true);
+    expect(content).toContain(STATS_START_MARKER);
+  });
+
+  it('should replace an existing stats block on subsequent calls', () => {
+    fs.writeFileSync(skillFile, '# My Skill\n');
+    const traces1: SkillTrace[] = [
+      { id: '1', skillName: 'sk', startTime: '2026-02-25T08:00:00Z', status: 'success' },
+    ];
+    injectSkillStats(skillFile, 'sk', traces1);
+
+    const traces2: SkillTrace[] = [
+      { id: '1', skillName: 'sk', startTime: '2026-02-25T08:00:00Z', status: 'success' },
+      { id: '2', skillName: 'sk', startTime: '2026-02-25T09:00:00Z', status: 'failed' },
+    ];
+    injectSkillStats(skillFile, 'sk', traces2);
+
+    const content = fs.readFileSync(skillFile, 'utf8');
+    // Should appear exactly once
+    expect(content.split(STATS_START_MARKER).length).toBe(2);
+    expect(content).toContain('| Runs today | 2 |');
+  });
+
+  it('should not corrupt content before the stats block', () => {
+    const original = '# My Skill\n\nThis skill does important work.\n';
+    fs.writeFileSync(skillFile, original);
+    injectSkillStats(skillFile, 'sk', []);
+    const content = fs.readFileSync(skillFile, 'utf8');
+    expect(content.startsWith(original)).toBe(true);
   });
 });
