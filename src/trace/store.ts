@@ -142,4 +142,27 @@ export class TraceStore {
       .filter((r) => r._type === 'cron')
       .map(({ _type: _t, ...rest }) => rest as CronRecord);
   }
+
+  /**
+   * Read all SkillTrace records across a date range (inclusive).
+   * @param since  Start date (inclusive)
+   * @param until  End date (inclusive, defaults to today)
+   */
+  readTracesDateRange(since: Date, until: Date = new Date()): SkillTrace[] {
+    const results: SkillTrace[] = [];
+    const cursor = new Date(since);
+    cursor.setHours(0, 0, 0, 0);
+    const end = new Date(until);
+    end.setHours(23, 59, 59, 999);
+
+    while (cursor <= end) {
+      const records = this.readTraces(new Date(cursor));
+      for (const r of records) {
+        results.push(r);
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return results;
+  }
 }

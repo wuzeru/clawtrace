@@ -9,6 +9,7 @@ import * as path from 'path';
 import { TraceStore } from '../trace/store';
 import { TraceRecorder } from '../trace/recorder';
 import { readInitConfig } from '../init/config';
+import { importSessionLogs } from '../import/importer';
 import {
   ClawTraceConfig,
   DailySummary,
@@ -260,4 +261,103 @@ export class ClawTrace {
     if (!config || !config.initialized) return true;
     return config.wrappedSkills.includes(skillName);
   }
+
+  // ---------------------------------------------------------------------------
+  // Import — `clawtrace import`
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Import historical skill calls from OpenClaw session JSONL logs.
+   *
+   * @param sessionsDir  Path to the directory containing *.jsonl session files.
+   * @param since        Only import entries on or after this date.
+   * @returns            Number of newly imported traces.
+   */
+  importFromSessions(sessionsDir: string, since?: Date): number {
+    return importSessionLogs(sessionsDir, this.store, since);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Multi-day stats — `clawtrace stats`
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Build an aggregate DailySummary across a date range.
+   *
+   * @param since  Start of range (inclusive).
+   * @param until  End of range (inclusive, defaults to today).
+   */
+  getStatsRange(since: Date, until: Date = new Date()): DailySummary {
+    const traces = this.store.readTracesDateRange(since, until);
+
+    const successCount = traces.filter((t) => t.status === 'success').length;
+    const failedCount = traces.filter((t) => t.status === 'failed').length;
+    const runningCount = traces.filter((t) => t.status === 'running').length;
+    const totalCost = traces.reduce((sum, t) => sum + (t.cost ?? 0), 0);
+
+    const sinceStr = since.toISOString().slice(0, 10);
+    const untilStr = until.toISOString().slice(0, 10);
+
+    return {
+      date: `${sinceStr} → ${untilStr}`,
+      traces,
+      totalSkills: traces.length,
+      successCount,
+      failedCount,
+      runningCount,
+      totalCost,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Skill ranking — `clawtrace rank`
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Aggregate per-skill statistics across a date range and return them sorted
+   * by call count descending.
+   */
+  getRankings(
+    since: Date,
+    until: Date = new Date()
+  ): SkillRankEntry[] {
+    const traces = this.store.readTracesDateRange(since, until);
+    const map = new Map<string, { count: number; success: number; durations: number[] }>();
+
+    for (const t of traces) {
+      if (!map.has(t.skillName)) {
+        map.set(t.skillName, { count: 0, success: 0, durations: [] });
+      }
+      const entry = map.get(t.skillName)!;
+      entry.count++;
+      if (t.status === 'success') entry.success++;
+      if (t.durationMs !== undefined) entry.durations.push(t.durationMs);
+    }
+
+    const results: SkillRankEntry[] = [];
+    for (const [skillName, stats] of map) {
+      const avgDurationMs =
+        stats.durations.length > 0
+          ? Math.round(stats.durations.reduce((a, b) => a + b, 0) / stats.durations.length)
+          : undefined;
+      const successRate =
+        stats.count > 0 ? Math.round((stats.success / stats.count) * 100) : 0;
+      results.push({ skillName, callCount: stats.count, successRate, avgDurationMs });
+    }
+
+    return results.sort((a, b) => b.callCount - a.callCount);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Supporting type for skill ranking entries
+// ---------------------------------------------------------------------------
+
+export interface SkillRankEntry {
+  skillName: string;
+  callCount: number;
+  /** Percentage 0–100 */
+  successRate: number;
+  /** Average duration in ms, or undefined if no duration data */
+  avgDurationMs?: number;
 }
