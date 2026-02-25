@@ -32,7 +32,7 @@ const program = new Command();
 program
   .name('clawtrace')
   .description('Native observability tool for OpenClaw agents — Skill tracing + Memory changes + Cron history')
-  .version('1.0.0');
+  .version('1.1.0');
 
 // ---------------------------------------------------------------------------
 // Formatting helpers
