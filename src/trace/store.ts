@@ -151,16 +151,19 @@ export class TraceStore {
   readTracesDateRange(since: Date, until: Date = new Date()): SkillTrace[] {
     const results: SkillTrace[] = [];
     const cursor = new Date(since);
-    cursor.setHours(0, 0, 0, 0);
+    cursor.setUTCHours(0, 0, 0, 0);
     const end = new Date(until);
-    end.setHours(23, 59, 59, 999);
+    end.setUTCHours(23, 59, 59, 999);
 
     while (cursor <= end) {
       const records = this.readTraces(new Date(cursor));
-      for (const r of records) {
-        results.push(r);
+      for (const r of records as any[]) {
+        if ((r as any)._type === 'cron' || !(r as any).skillName) {
+          continue;
+        }
+        results.push(r as SkillTrace);
       }
-      cursor.setDate(cursor.getDate() + 1);
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
 
     return results;

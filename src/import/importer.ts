@@ -156,11 +156,14 @@ export function importSessionLogs(
   // Build a set of IDs already present across affected dates to avoid duplicates
   const existingIds = new Set<string>();
   if (calls.length > 0) {
-    const earliest = calls.reduce(
-      (min, c) => (c.timestamp < min ? c.timestamp : min),
-      calls[0].timestamp
+    const earliestMs = calls.reduce(
+      (min, c) => {
+        const t = Date.parse(c.timestamp);
+        return t < min ? t : min;
+      },
+      Date.parse(calls[0].timestamp)
     );
-    const sinceDate = since ?? new Date(earliest);
+    const sinceDate = since ?? new Date(earliestMs);
     const existing = store.readTracesDateRange(sinceDate, new Date());
     for (const t of existing) {
       existingIds.add(t.id);

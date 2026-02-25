@@ -521,7 +521,7 @@ program
         console.error(chalk.red(`❌ Invalid date "${options.since}". Use YYYY-MM-DD format.`));
         process.exit(1);
       }
-      since.setHours(0, 0, 0, 0);
+      since.setUTCHours(0, 0, 0, 0);
     }
 
     console.log(chalk.blue('\n📥 Importing from OpenClaw session logs...\n'));
@@ -547,7 +547,7 @@ function parseRange(range: string): Date {
   const now = new Date();
   if (range === 'all') {
     // Go back 10 years as a practical "all time" horizon
-    return new Date(now.getFullYear() - 10, 0, 1);
+    return new Date(Date.UTC(now.getUTCFullYear() - 10, 0, 1));
   }
   const match = range.match(/^(\d+)d$/);
   if (!match) {
@@ -556,8 +556,8 @@ function parseRange(range: string): Date {
   }
   const days = parseInt(match[1], 10);
   const since = new Date(now);
-  since.setDate(since.getDate() - days + 1);
-  since.setHours(0, 0, 0, 0);
+  since.setUTCDate(since.getUTCDate() - days + 1);
+  since.setUTCHours(0, 0, 0, 0);
   return since;
 }
 
