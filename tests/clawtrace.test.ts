@@ -10,6 +10,7 @@ import { TraceStore } from '../src/trace/store';
 import { TraceRecorder } from '../src/trace/recorder';
 import { detectSkills } from '../src/init/detector';
 import { readInitConfig, writeInitConfig } from '../src/init/config';
+import { injectSkillStats, buildStatsBlock, STATS_START_MARKER, STATS_END_MARKER } from '../src/init/injector';
 import { SkillTrace, MemoryChange, CronRecord } from '../src/types';
 
 // ---------------------------------------------------------------------------
@@ -629,5 +630,115 @@ describe('ClawTrace.shouldWrap', () => {
       tmpDir
     );
     expect(ct.shouldWrap('skill-a', tmpDir)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// injectSkillStats / buildStatsBlock
+// ---------------------------------------------------------------------------
+describe('buildStatsBlock', () => {
+  it('should include start and end markers', () => {
+    const block = buildStatsBlock([]);
+    expect(block).toContain(STATS_START_MARKER);
+    expect(block).toContain(STATS_END_MARKER);
+  });
+
+  it('should show zero counts when no traces provided', () => {
+    const block = buildStatsBlock([]);
+    expect(block).toContain('| Runs today | 0 |');
+    expect(block).toContain('| ✅ Success | 0 |');
+    expect(block).toContain('| ❌ Failed | 0 |');
+    expect(block).toContain('| 🕐 Last run | - |');
+  });
+
+  it('should count success and failed traces correctly', () => {
+    const traces: SkillTrace[] = [
+      { id: '1', skillName: 'sk', startTime: '2026-02-25T08:00:00Z', status: 'success', durationMs: 5000 },
+      { id: '2', skillName: 'sk', startTime: '2026-02-25T09:00:00Z', status: 'failed', durationMs: 3000 },
+      { id: '3', skillName: 'sk', startTime: '2026-02-25T10:00:00Z', status: 'success', durationMs: 7000 },
+    ];
+    const block = buildStatsBlock(traces);
+    expect(block).toContain('| Runs today | 3 |');
+    expect(block).toContain('| ✅ Success | 2 |');
+    expect(block).toContain('| ❌ Failed | 1 |');
+  });
+
+  it('should compute average duration correctly', () => {
+    const traces: SkillTrace[] = [
+      { id: '1', skillName: 'sk', startTime: '2026-02-25T08:00:00Z', status: 'success', durationMs: 4000 },
+      { id: '2', skillName: 'sk', startTime: '2026-02-25T09:00:00Z', status: 'success', durationMs: 8000 },
+    ];
+    const block = buildStatsBlock(traces);
+    // avg = 6000ms = 6s
+    expect(block).toContain('| ⏱ Avg duration | 6s |');
+  });
+
+  it('should show last run from the most recent trace by startTime', () => {
+    const traces: SkillTrace[] = [
+      { id: '1', skillName: 'sk', startTime: '2026-02-25T07:00:00Z', status: 'failed' },
+      { id: '2', skillName: 'sk', startTime: '2026-02-25T10:30:00Z', status: 'success' },
+    ];
+    const block = buildStatsBlock(traces);
+    expect(block).toContain('10:30 UTC ✅');
+  });
+});
+
+describe('injectSkillStats', () => {
+  let tmpDir: string;
+  let skillFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawtrace-inject-'));
+    skillFile = path.join(tmpDir, 'SKILL.md');
+  });
+
+  afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  it('should do nothing when the file does not exist', () => {
+    expect(() => injectSkillStats(path.join(tmpDir, 'MISSING.md'), 'sk', [])).not.toThrow();
+  });
+
+  it('should append a stats block to an empty file', () => {
+    fs.writeFileSync(skillFile, '');
+    injectSkillStats(skillFile, 'sk', []);
+    const content = fs.readFileSync(skillFile, 'utf8');
+    expect(content).toContain(STATS_START_MARKER);
+    expect(content).toContain(STATS_END_MARKER);
+    expect(content).toContain('## 📊 ClawTrace Statistics');
+  });
+
+  it('should append after existing content with a blank line separator', () => {
+    fs.writeFileSync(skillFile, '# My Skill\nDoes stuff.\n');
+    injectSkillStats(skillFile, 'sk', []);
+    const content = fs.readFileSync(skillFile, 'utf8');
+    expect(content.startsWith('# My Skill\nDoes stuff.\n')).toBe(true);
+    expect(content).toContain(STATS_START_MARKER);
+  });
+
+  it('should replace an existing stats block on subsequent calls', () => {
+    fs.writeFileSync(skillFile, '# My Skill\n');
+    const traces1: SkillTrace[] = [
+      { id: '1', skillName: 'sk', startTime: '2026-02-25T08:00:00Z', status: 'success' },
+    ];
+    injectSkillStats(skillFile, 'sk', traces1);
+
+    const traces2: SkillTrace[] = [
+      { id: '1', skillName: 'sk', startTime: '2026-02-25T08:00:00Z', status: 'success' },
+      { id: '2', skillName: 'sk', startTime: '2026-02-25T09:00:00Z', status: 'failed' },
+    ];
+    injectSkillStats(skillFile, 'sk', traces2);
+
+    const content = fs.readFileSync(skillFile, 'utf8');
+    // Should appear exactly once
+    expect(content.split(STATS_START_MARKER).length).toBe(2);
+    expect(content).toContain('| Runs today | 2 |');
+  });
+
+  it('should not corrupt content before the stats block', () => {
+    const original = '# My Skill\n\nThis skill does important work.\n';
+    fs.writeFileSync(skillFile, original);
+    injectSkillStats(skillFile, 'sk', []);
+    const content = fs.readFileSync(skillFile, 'utf8');
+    expect(content.startsWith(original)).toBe(true);
   });
 });

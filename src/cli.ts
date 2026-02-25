@@ -4,6 +4,7 @@
  *
  * Commands:
  *   clawtrace init                               Detect skills and configure wrapping
+ *   clawtrace inject [--skill <name>]            Inject run statistics into SKILL.md files
  *   clawtrace today                              Show today's skill executions
  *   clawtrace memory [--last <hours>]            Show memory change history
  *   clawtrace session [--label <name>]           Show session execution tree
@@ -18,6 +19,7 @@ import chalk from 'chalk';
 import { ClawTrace } from './core/clawtrace';
 import { detectSkills } from './init/detector';
 import { readInitConfig, writeInitConfig } from './init/config';
+import { injectSkillStats } from './init/injector';
 import { SkillTrace, MemoryChange, CronRecord, TraceSession, TraceStatus } from './types';
 
 const program = new Command();
@@ -432,6 +434,59 @@ program
         'Use ct.shouldWrap(skillName) in your skill code to check this configuration.'
       )
     );
+    console.log('');
+  });
+
+// ---------------------------------------------------------------------------
+// `clawtrace inject [--skill <name>] [--root <dir>]`
+// ---------------------------------------------------------------------------
+program
+  .command('inject')
+  .description("Inject today's run statistics into SKILL.md files so agents can read them")
+  .option('--skill <name>', 'Inject stats only for this skill name')
+  .option('--root <dir>', 'Project root directory (defaults to cwd)')
+  .action((options: { skill?: string; root?: string }) => {
+    const rootDir = options.root ?? process.cwd();
+    const ct = new ClawTrace();
+
+    const skills = detectSkills(rootDir);
+
+    if (skills.length === 0) {
+      console.log(chalk.yellow('\nNo skill files found to update.'));
+      console.log(
+        chalk.gray(
+          'ClawTrace looks for SKILL.md files in: skills/, src/skills/, skill/, src/skill/'
+        )
+      );
+      console.log('');
+      return;
+    }
+
+    const targets = options.skill
+      ? skills.filter((s) => s.name === options.skill)
+      : skills;
+
+    if (targets.length === 0) {
+      console.log(chalk.yellow(`\nSkill "${options.skill}" not found.`));
+      console.log('');
+      return;
+    }
+
+    console.log(chalk.blue('\n📝 Injecting ClawTrace statistics into SKILL.md files...\n'));
+
+    let updated = 0;
+    for (const skill of targets) {
+      const traces = ct.getSkillTraces(skill.name);
+      injectSkillStats(skill.filePath, skill.name, traces);
+      const rel = skill.filePath.startsWith(rootDir)
+        ? skill.filePath.slice(rootDir.length + 1)
+        : skill.filePath;
+      console.log(`  ✅ ${chalk.white(skill.name.padEnd(35))} ${chalk.gray(rel)}`);
+      updated++;
+    }
+
+    console.log('');
+    console.log(chalk.green(`Updated ${updated} skill file(s) with today's statistics.`));
     console.log('');
   });
 
