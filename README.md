@@ -1,56 +1,55 @@
-# ClawTrace — OpenClaw原生Agent可观测性Skill
+# ClawTrace — Native Observability Skill for OpenClaw Agents
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
 
-> 将 Entire CLI 的可观测性思想融入 OpenClaw，让每个 Skill 执行、Cron 任务、Sub-agent 调用都**自动产生结构化 trace**，实现 OpenClaw 的原生自省能力
+> Brings the observability ideas of Entire CLI into OpenClaw, so that every Skill execution, Cron job, and Sub-agent call **automatically produces a structured trace**, enabling native introspection for OpenClaw.
 
 ---
 
-## 🎯 核心能力
+## 🎯 Core Capabilities
 
-| 能力 | 描述 |
-|-----|------|
-| **Skill 执行追踪** | 每个 Skill 执行自动记录到 `memory/traces/YYYY-MM-DD.jsonl` |
-| **Memory 变更追踪** | 追踪 MEMORY.md / memory/*.md 的每次变更（谁、何时、改了什么）|
-| **Cron 执行历史** | 所有 Cron job 执行历史 + 成功率 + 耗时 |
-| **Sub-agent 调用树** | main → sub-agent A → sub-agent B 完整执行树 |
+| Capability | Description |
+|-----------|-------------|
+| **Skill Execution Tracing** | Every Skill execution is automatically recorded to `memory/traces/YYYY-MM-DD.jsonl` |
+| **Memory Change Tracking** | Tracks every change to MEMORY.md / memory/*.md (who, when, what changed) |
+| **Cron Execution History** | Full history of all Cron job executions + success rate + duration |
+| **Sub-agent Call Tree** | Complete execution tree: main → sub-agent A → sub-agent B |
 
 ---
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
 ```bash
-# 安装
-cd projects/2026-02-24-clawtrace
+# Install
 npm install
 npm run build
 
-# 查看今天所有 skill 执行
+# Show today's skill executions
 clawtrace today
 
-# 查看最近 24h Memory 变更
+# Show memory changes in the last 24h
 clawtrace memory --last 24
 
-# 查看 session 执行树
+# Show session execution tree
 clawtrace session --label morning-routine
 
-# 查看某个 skill 的最后一次执行详情
+# Show the last execution details for a skill
 clawtrace detail --skill parser-status --last
 
-# 查看 Cron 执行历史
+# Show cron job history
 clawtrace cron
 ```
 
 ---
 
-## 📊 CLI 示例输出
+## 📊 CLI Example Output
 
 ### `clawtrace today`
 
 ```
-📊 2026-02-24 Skill 执行摘要
+📊 2026-01-01 Skill Execution Summary
 
 Skill                          Status    Duration    Cost
 ──────────────────────────────────────────────────────────
@@ -65,9 +64,9 @@ Total: 4 skill(s), 2 success, 1 failed, 1 running | Cost: $0.66
 ### `clawtrace memory --last 24`
 
 ```
-📝 Memory 变更历史 (最近 24h)
+📝 Memory Change History (last 24h)
 
-• 23:07 [daily-tool-creator] memory/2026-02-24.md (+45/0 lines) "wrote daily note"
+• 23:07 [daily-tool-creator] memory/2026-01-01.md (+45/0 lines) "wrote daily note"
 • 09:15 [morning-email] memory/MEMORY.md (+3/0 lines)
 • 08:30 [heartbeat] memory/heartbeat.json (+1/-1 lines)
 ```
@@ -80,30 +79,30 @@ Total: 4 skill(s), 2 success, 1 failed, 1 running | Cost: $0.66
 │  ├─ web_search × 8 calls
 │  ├─ web_fetch × 3 calls
 ├─ [08:05] email-briefing (2m15s, $0.08) ✅
-└─ [08:10] standup-dingtalk (1m30s, $0.05) ✅
+└─ [08:10] standup-report (1m30s, $0.05) ✅
 ```
 
 ---
 
-## 🔧 API 使用
+## 🔧 API Usage
 
-### 作为库集成到现有 Skill
+### Integrate as a Library into an Existing Skill
 
 ```typescript
 import { ClawTrace } from 'clawtrace';
 
 const ct = new ClawTrace();
 
-// 方式1: 自动包装 skill 函数
+// Option 1: Automatically wrap a skill function
 const result = await ct.wrap('my-skill', async () => {
-  // 你的 skill 逻辑
+  // your skill logic
   return doSomething();
 }, {
   sessionLabel: 'morning-routine',
   costUsd: 0.12,
 });
 
-// 方式2: 手动记录
+// Option 2: Record manually
 ct.recordTrace({
   skillName: 'my-skill',
   status: 'success',
@@ -112,7 +111,7 @@ ct.recordTrace({
   cost: 0.05,
 });
 
-// 记录 Memory 变更
+// Record a memory change
 ct.recordMemoryChange({
   agent: 'my-skill',
   file: 'memory/MEMORY.md',
@@ -121,7 +120,7 @@ ct.recordMemoryChange({
   description: 'updated market section',
 });
 
-// 包装 Cron job
+// Wrap a Cron job
 await ct.wrapCron('daily-cleanup', async () => {
   // cleanup logic
 }, '0 3 * * *');
@@ -129,36 +128,36 @@ await ct.wrapCron('daily-cleanup', async () => {
 
 ---
 
-## 📂 文件结构
+## 📂 File Structure
 
 ```
-projects/2026-02-24-clawtrace/
+clawtrace/
 ├── src/
-│   ├── cli.ts              # CLI 入口
-│   ├── index.ts            # 公共 API
+│   ├── cli.ts              # CLI entry point
+│   ├── index.ts            # Public API
 │   ├── core/
-│   │   └── clawtrace.ts    # 核心协调器
+│   │   └── clawtrace.ts    # Core coordinator
 │   ├── trace/
-│   │   ├── store.ts        # JSONL 存储层
-│   │   └── recorder.ts     # Trace 记录中间件
+│   │   ├── store.ts        # JSONL storage layer
+│   │   └── recorder.ts     # Trace recording middleware
 │   └── types/
-│       └── index.ts        # 类型定义
+│       └── index.ts        # Type definitions
 ├── tests/
-│   └── clawtrace.test.ts   # 单元测试
+│   └── clawtrace.test.ts   # Unit tests
 ├── package.json
 ├── tsconfig.json
 └── jest.config.js
 ```
 
-数据存储位置：
+Data storage locations:
 ```
-memory/traces/YYYY-MM-DD.jsonl          # Skill 执行记录 + Cron 记录
-memory/memory-changes/YYYY-MM-DD.jsonl  # Memory 变更记录
+memory/traces/YYYY-MM-DD.jsonl          # Skill execution records + Cron records
+memory/memory-changes/YYYY-MM-DD.jsonl  # Memory change records
 ```
 
 ---
 
-## 📋 JSONL 数据格式
+## 📋 JSONL Data Formats
 
 ### Skill Trace
 ```json
@@ -166,8 +165,8 @@ memory/memory-changes/YYYY-MM-DD.jsonl  # Memory 变更记录
   "id": "lf2k3a-x7p9qr",
   "skillName": "morning-data-collection",
   "sessionLabel": "morning-routine",
-  "startTime": "2026-02-24T08:00:00.000Z",
-  "endTime": "2026-02-24T08:03:42.000Z",
+  "startTime": "2026-01-01T08:00:00.000Z",
+  "endTime": "2026-01-01T08:03:42.000Z",
   "durationMs": 222000,
   "status": "success",
   "cost": 0.12,
@@ -182,31 +181,31 @@ memory/memory-changes/YYYY-MM-DD.jsonl  # Memory 变更记录
 ```json
 {
   "id": "mc-abc123",
-  "time": "2026-02-24T09:15:00.000Z",
+  "time": "2026-01-01T09:15:00.000Z",
   "agent": "morning-email",
   "file": "memory/MEMORY.md",
   "linesAdded": 3,
   "linesRemoved": 0,
-  "description": "updated 金融市场 section"
+  "description": "updated market section"
 }
 ```
 
 ---
 
-## 🔧 配置
+## 🔧 Configuration
 
 ```typescript
 const ct = new ClawTrace({
-  tracesDir: 'memory/traces',          // JSONL 文件存储目录
-  memoryChangesDir: 'memory/memory-changes',  // Memory 变更存储目录
+  tracesDir: 'memory/traces',                   // Directory for JSONL trace files
+  memoryChangesDir: 'memory/memory-changes',    // Directory for memory change files
 });
 ```
 
-零配置：默认使用 `process.cwd()/memory/traces` 和 `process.cwd()/memory/memory-changes`。
+Zero-config: defaults to `process.cwd()/memory/traces` and `process.cwd()/memory/memory-changes`.
 
 ---
 
-## 🧪 测试
+## 🧪 Testing
 
 ```bash
 npm test
@@ -214,14 +213,12 @@ npm test
 
 ---
 
-## 📝 参考
+## 📝 References
 
-- 灵感来源: [Entire CLI](https://github.com/gitentire/entire) — Git-based observability for AI agents
-- 我们现有系统: OpenClaw Skills / Cron / Memory
-- 参考架构: Datadog APM, Honeycomb, OpenTelemetry
+- Inspiration: [Entire CLI](https://github.com/gitentire/entire) — Git-based observability for AI agents
+- Integration target: OpenClaw Skills / Cron / Memory
+- Reference architectures: Datadog APM, Honeycomb, OpenTelemetry
 
 ---
 
-**开发者**: Forge  
-**日期**: 2026-02-24  
-**版本**: v1.0.0
+**Version**: v1.0.0

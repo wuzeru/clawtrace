@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * ClawTrace CLI — OpenClaw原生Agent可观测性工具
+ * ClawTrace CLI — Native observability tool for OpenClaw agents
  *
  * Commands:
  *   clawtrace today                              Show today's skill executions
@@ -20,7 +20,7 @@ const program = new Command();
 
 program
   .name('clawtrace')
-  .description('OpenClaw原生Agent可观测性工具 — Skill执行追踪 + Memory变更 + Cron历史')
+  .description('Native observability tool for OpenClaw agents — Skill tracing + Memory changes + Cron history')
   .version('1.0.0');
 
 // ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ program
     const ct = new ClawTrace();
     const summary = ct.getDailySummary();
 
-    console.log(chalk.blue(`\n📊 ${summary.date} Skill 执行摘要\n`));
+    console.log(chalk.blue(`\n📊 ${summary.date} Skill Execution Summary\n`));
     printTraceTable(summary.traces);
 
     const totalLine =
@@ -113,7 +113,7 @@ program
     const ct = new ClawTrace();
     const changes = ct.getRecentMemoryChanges(hours);
 
-    console.log(chalk.blue(`\n📝 Memory 变更历史 (最近 ${hours}h)\n`));
+    console.log(chalk.blue(`\n📝 Memory Change History (last ${hours}h)\n`));
 
     if (changes.length === 0) {
       console.log(chalk.yellow('No memory changes found.'));
@@ -263,7 +263,7 @@ program
     const ct = new ClawTrace();
     const records = ct.getCronHistory();
 
-    console.log(chalk.blue('\n⏰ Cron 执行历史\n'));
+    console.log(chalk.blue('\n⏰ Cron Execution History\n'));
 
     if (records.length === 0) {
       console.log(chalk.yellow('No cron records found for today.'));
