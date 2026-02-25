@@ -62,57 +62,86 @@ clawtrace cron
 
 ClawTrace writes its data inside OpenClaw's standard `memory/` directory so that all agent state (memory files **and** execution traces) lives in one place.
 
-### Step-by-step: Adding ClawTrace to an OpenClaw Skill
+### Step-by-step: Adding ClawTrace to an OpenClaw Project
 
-**1. Install the package in your OpenClaw project**
+ClawTrace is a third-party package — it does **not** need access to OpenClaw's internal scheduling code. Instead, it uses an **agent-driven** approach: `clawtrace inject` embeds reporting instructions directly into each `SKILL.md`. Since the AI agent reads SKILL.md as its skill definition, it sees the instructions and self-reports execution results after each run.
+
+**1. Install ClawTrace in your OpenClaw project**
 
 ```bash
 npm install clawtrace
+npm run build
 ```
 
-**2. Import and instantiate inside your Skill**
+**2. Detect and configure skills**
+
+```bash
+clawtrace init
+```
+
+This scans for `SKILL.md` files and lets you choose which skills to track.
+
+**3. Inject stats + reporting instructions into SKILL.md files**
+
+```bash
+clawtrace inject
+```
+
+This appends a statistics block **and** agent-facing reporting instructions to the end of each `SKILL.md`:
+
+```markdown
+<!-- clawtrace:stats:start -->
+## 📊 ClawTrace Statistics
+| Metric | Value |
+|--------|-------|
+| Runs today | 3 |
+| ✅ Success | 2 |
+| ...    | ...   |
+
+### 📝 Execution Reporting
+> **After executing this skill, report the result by running:**
+> ```bash
+> clawtrace record --skill my-skill --status success --duration <ms>
+> ```
+> If the execution failed, use `--status failed --error "<message>"`.
+<!-- clawtrace:stats:end -->
+```
+
+**4. The agent self-reports (no code changes needed)**
+
+When the AI agent reads the `SKILL.md`, it sees the reporting instruction and runs `clawtrace record` after executing the skill. This writes a trace entry to the daily JSONL file — no need to modify OpenClaw's source code.
+
+**5. Re-run inject to refresh statistics**
+
+```bash
+clawtrace inject       # update all SKILL.md files with latest stats
+```
+
+Each subsequent `clawtrace inject` replaces the old stats block with fresh numbers.
+
+**Complete feedback loop:**
+
+```
+clawtrace inject → writes instructions + stats into SKILL.md
+                        ↓
+AI agent reads SKILL.md → executes skill → runs `clawtrace record`
+                        ↓
+clawtrace record → appends trace to memory/traces/YYYY-MM-DD.jsonl
+                        ↓
+clawtrace inject → reads JSONL → updates stats in SKILL.md
+```
+
+### Advanced: Programmatic API (for custom orchestrators)
+
+If you have your own orchestration code that calls skills, you can also use the TypeScript API directly:
 
 ```typescript
 import { ClawTrace } from 'clawtrace';
-
-// Zero-config: reads/writes to <cwd>/memory/traces and <cwd>/memory/memory-changes
 const ct = new ClawTrace();
-```
 
-**3. Wrap your Skill function**
-
-```typescript
-// ClawTrace records start/end time, duration, status, and cost automatically
 const result = await ct.wrap('my-skill', async () => {
-  // your existing Skill logic here
   return doSomething();
-}, {
-  sessionLabel: 'morning-routine',  // optional
-  costUsd: 0.12,                    // optional
-});
-```
-
-**4. (Optional) Record memory file changes**
-
-```typescript
-ct.recordMemoryChange({
-  agent: 'my-skill',
-  file: 'memory/MEMORY.md',
-  linesAdded: 5,
-  linesRemoved: 0,
-  description: 'updated market data section',
-});
-```
-
-**5. (Optional) Use a custom directory path**
-
-If your OpenClaw project has a non-standard layout, pass explicit paths:
-
-```typescript
-const ct = new ClawTrace({
-  tracesDir: '/path/to/project/memory/traces',
-  memoryChangesDir: '/path/to/project/memory/memory-changes',
-});
+}, { sessionLabel: 'morning-routine' });
 ```
 
 ### Running the CLI inside an OpenClaw project

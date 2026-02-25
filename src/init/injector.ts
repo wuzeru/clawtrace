@@ -37,7 +37,7 @@ function statusEmoji(status: string): string {
 /**
  * Build the Markdown statistics block for a skill.
  */
-export function buildStatsBlock(traces: SkillTrace[]): string {
+export function buildStatsBlock(traces: SkillTrace[], skillName: string = 'SKILL_NAME'): string {
   const successCount = traces.filter((t) => t.status === 'success').length;
   const failedCount = traces.filter((t) => t.status === 'failed').length;
 
@@ -72,6 +72,14 @@ export function buildStatsBlock(traces: SkillTrace[]): string {
     `| ❌ Failed | ${failedCount} |`,
     `| ⏱ Avg duration | ${formatDuration(avgDuration)} |`,
     `| 🕐 Last run | ${lastRunStr} |`,
+    '',
+    '### 📝 Execution Reporting',
+    '',
+    '> **After executing this skill, report the result by running:**',
+    '> ```bash',
+    `> clawtrace record --skill ${skillName} --status success --duration <ms>`,
+    '> ```',
+    '> If the execution failed, use `--status failed --error "<message>"`.',
     STATS_END_MARKER,
   ].join('\n');
 }
@@ -92,7 +100,7 @@ export function injectSkillStats(
 ): void {
   if (!fs.existsSync(skillFilePath)) return;
 
-  const statsBlock = buildStatsBlock(traces);
+  const statsBlock = buildStatsBlock(traces, skillName);
   let content = fs.readFileSync(skillFilePath, 'utf8');
 
   const startIdx = content.indexOf(STATS_START_MARKER);
@@ -112,5 +120,4 @@ export function injectSkillStats(
   }
 
   fs.writeFileSync(skillFilePath, content, 'utf8');
-  void skillName; // name is accepted for API clarity / future use
 }
