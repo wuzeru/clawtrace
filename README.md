@@ -44,6 +44,93 @@ clawtrace cron
 
 ---
 
+## 🗂️ OpenClaw Integration Guide
+
+### Does ClawTrace require special directories?
+
+**No manual setup is needed.** ClawTrace automatically creates all required directories the first time it writes a record:
+
+```
+<your-openclaw-project>/
+├── memory/                          ← OpenClaw's standard memory directory
+│   ├── MEMORY.md                    ← Your existing memory file (unchanged)
+│   ├── traces/                      ← Auto-created by ClawTrace
+│   │   └── YYYY-MM-DD.jsonl         ← Daily skill execution records
+│   └── memory-changes/              ← Auto-created by ClawTrace
+│       └── YYYY-MM-DD.jsonl         ← Daily memory change records
+```
+
+ClawTrace writes its data inside OpenClaw's standard `memory/` directory so that all agent state (memory files **and** execution traces) lives in one place.
+
+### Step-by-step: Adding ClawTrace to an OpenClaw Skill
+
+**1. Install the package in your OpenClaw project**
+
+```bash
+npm install clawtrace
+```
+
+**2. Import and instantiate inside your Skill**
+
+```typescript
+import { ClawTrace } from 'clawtrace';
+
+// Zero-config: reads/writes to <cwd>/memory/traces and <cwd>/memory/memory-changes
+const ct = new ClawTrace();
+```
+
+**3. Wrap your Skill function**
+
+```typescript
+// ClawTrace records start/end time, duration, status, and cost automatically
+const result = await ct.wrap('my-skill', async () => {
+  // your existing Skill logic here
+  return doSomething();
+}, {
+  sessionLabel: 'morning-routine',  // optional
+  costUsd: 0.12,                    // optional
+});
+```
+
+**4. (Optional) Record memory file changes**
+
+```typescript
+ct.recordMemoryChange({
+  agent: 'my-skill',
+  file: 'memory/MEMORY.md',
+  linesAdded: 5,
+  linesRemoved: 0,
+  description: 'updated market data section',
+});
+```
+
+**5. (Optional) Use a custom directory path**
+
+If your OpenClaw project has a non-standard layout, pass explicit paths:
+
+```typescript
+const ct = new ClawTrace({
+  tracesDir: '/path/to/project/memory/traces',
+  memoryChangesDir: '/path/to/project/memory/memory-changes',
+});
+```
+
+### Running the CLI inside an OpenClaw project
+
+Run `clawtrace` commands from the **root directory** of your OpenClaw project so that the default `memory/` paths resolve correctly:
+
+```bash
+cd /path/to/your-openclaw-project
+
+# View today's executions
+clawtrace today
+
+# View memory changes in the past 24 hours
+clawtrace memory --last 24
+```
+
+---
+
 ## 📊 CLI Example Output
 
 ### `clawtrace today`
