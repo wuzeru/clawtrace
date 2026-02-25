@@ -354,12 +354,12 @@ program
       console.log(chalk.yellow('No skill files found.'));
       console.log(
         chalk.gray(
-          'ClawTrace looks for .ts/.js files in: skills/, src/skills/, skill/, src/skill/'
+          'ClawTrace looks for SKILL.md files (or *.md files) in: skills/, src/skills/, skill/, src/skill/'
         )
       );
       console.log(
         chalk.gray(
-          'Add your skill files to one of these directories, then re-run `clawtrace init`.'
+          'Add your OpenClaw skill directories (each with a SKILL.md) there, then re-run `clawtrace init`.'
         )
       );
       console.log('');

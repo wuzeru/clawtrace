@@ -478,58 +478,68 @@ describe('detectSkills', () => {
     expect(detectSkills(tmpDir)).toEqual([]);
   });
 
-  it('should detect .ts skill files in skills/ directory', () => {
+  it('should detect directory-based skills (skills/<name>/SKILL.md)', () => {
     const skillsDir = path.join(tmpDir, 'skills');
-    fs.mkdirSync(skillsDir);
-    fs.writeFileSync(path.join(skillsDir, 'my-skill.ts'), '');
-    fs.writeFileSync(path.join(skillsDir, 'another-skill.ts'), '');
+    fs.mkdirSync(path.join(skillsDir, 'my-skill'), { recursive: true });
+    fs.writeFileSync(path.join(skillsDir, 'my-skill', 'SKILL.md'), '');
+    fs.mkdirSync(path.join(skillsDir, 'another-skill'));
+    fs.writeFileSync(path.join(skillsDir, 'another-skill', 'SKILL.md'), '');
 
     const skills = detectSkills(tmpDir);
     expect(skills).toHaveLength(2);
     expect(skills.map((s) => s.name).sort()).toEqual(['another-skill', 'my-skill']);
   });
 
-  it('should detect .js skill files', () => {
+  it('should detect flat .md skill files in skills/ directory', () => {
     const skillsDir = path.join(tmpDir, 'skills');
     fs.mkdirSync(skillsDir);
-    fs.writeFileSync(path.join(skillsDir, 'js-skill.js'), '');
+    fs.writeFileSync(path.join(skillsDir, 'flat-skill.md'), '');
 
     const skills = detectSkills(tmpDir);
     expect(skills).toHaveLength(1);
-    expect(skills[0].name).toBe('js-skill');
+    expect(skills[0].name).toBe('flat-skill');
   });
 
-  it('should exclude index files and test files', () => {
+  it('should exclude well-known non-skill md files', () => {
     const skillsDir = path.join(tmpDir, 'skills');
     fs.mkdirSync(skillsDir);
-    fs.writeFileSync(path.join(skillsDir, 'index.ts'), '');
-    fs.writeFileSync(path.join(skillsDir, 'my-skill.test.ts'), '');
-    fs.writeFileSync(path.join(skillsDir, 'my-skill.spec.ts'), '');
-    fs.writeFileSync(path.join(skillsDir, 'my-skill.d.ts'), '');
-    fs.writeFileSync(path.join(skillsDir, 'real-skill.ts'), '');
+    fs.writeFileSync(path.join(skillsDir, 'README.md'), '');
+    fs.writeFileSync(path.join(skillsDir, 'CHANGELOG.md'), '');
+    fs.writeFileSync(path.join(skillsDir, 'AGENTS.md'), '');
+    fs.writeFileSync(path.join(skillsDir, 'real-skill.md'), '');
 
     const skills = detectSkills(tmpDir);
     expect(skills).toHaveLength(1);
     expect(skills[0].name).toBe('real-skill');
   });
 
+  it('should skip directories without a SKILL.md', () => {
+    const skillsDir = path.join(tmpDir, 'skills');
+    fs.mkdirSync(path.join(skillsDir, 'incomplete-skill'), { recursive: true });
+    fs.writeFileSync(path.join(skillsDir, 'incomplete-skill', 'README.md'), '');
+
+    const skills = detectSkills(tmpDir);
+    expect(skills).toHaveLength(0);
+  });
+
   it('should detect skills in src/skills/ directory', () => {
     const skillsDir = path.join(tmpDir, 'src', 'skills');
-    fs.mkdirSync(skillsDir, { recursive: true });
-    fs.writeFileSync(path.join(skillsDir, 'nested-skill.ts'), '');
+    fs.mkdirSync(path.join(skillsDir, 'nested-skill'), { recursive: true });
+    fs.writeFileSync(path.join(skillsDir, 'nested-skill', 'SKILL.md'), '');
 
     const skills = detectSkills(tmpDir);
     expect(skills).toHaveLength(1);
     expect(skills[0].name).toBe('nested-skill');
   });
 
-  it('should include filePath in result', () => {
+  it('should include filePath pointing to SKILL.md for directory-based skills', () => {
     const skillsDir = path.join(tmpDir, 'skills');
-    fs.mkdirSync(skillsDir);
-    fs.writeFileSync(path.join(skillsDir, 'path-skill.ts'), '');
+    fs.mkdirSync(path.join(skillsDir, 'path-skill'), { recursive: true });
+    const skillMd = path.join(skillsDir, 'path-skill', 'SKILL.md');
+    fs.writeFileSync(skillMd, '');
 
     const skills = detectSkills(tmpDir);
-    expect(skills[0].filePath).toBe(path.join(skillsDir, 'path-skill.ts'));
+    expect(skills[0].filePath).toBe(skillMd);
   });
 });
 
