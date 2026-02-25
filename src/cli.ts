@@ -1,0 +1,335 @@
+#!/usr/bin/env node
+/**
+ * ClawTrace CLI — OpenClaw原生Agent可观测性工具
+ *
+ * Commands:
+ *   clawtrace today                              Show today's skill executions
+ *   clawtrace memory [--last <hours>]            Show memory change history
+ *   clawtrace session [--label <name>]           Show session execution tree
+ *   clawtrace detail --skill <name> [--last]     Show detail for a skill
+ *   clawtrace cron                               Show cron job history
+ *   clawtrace record --skill <name> --status <s> Record a completed trace
+ */
+
+import { Command } from 'commander';
+import * as chalk from 'chalk';
+import { ClawTrace } from './core/clawtrace';
+import { SkillTrace, MemoryChange, CronRecord, TraceSession, TraceStatus } from './types';
+
+const program = new Command();
+
+program
+  .name('clawtrace')
+  .description('OpenClaw原生Agent可观测性工具 — Skill执行追踪 + Memory变更 + Cron历史')
+  .version('1.0.0');
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+function statusIcon(status: TraceStatus): string {
+  if (status === 'success') return '✅';
+  if (status === 'failed') return '❌';
+  return '🔄';
+}
+
+function formatDuration(ms?: number): string {
+  if (ms === undefined) return '-';
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return m > 0 ? `${m}m ${rem}s` : `${s}s`;
+}
+
+function formatCost(cost?: number): string {
+  if (cost === undefined) return '-';
+  return `$${cost.toFixed(2)}`;
+}
+
+function formatTime(iso?: string): string {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+}
+
+function printTraceTable(traces: SkillTrace[]): void {
+  if (traces.length === 0) {
+    console.log(chalk.yellow('No skill executions found.'));
+    return;
+  }
+
+  const col1 = Math.max(30, ...traces.map((t) => t.skillName.length)) + 2;
+
+  const header =
+    'Skill'.padEnd(col1) + 'Status'.padEnd(10) + 'Duration'.padEnd(12) + 'Cost';
+  console.log(chalk.blue(header));
+  console.log(chalk.gray('─'.repeat(header.length + 4)));
+
+  for (const t of traces) {
+    const icon = statusIcon(t.status);
+    console.log(
+      t.skillName.padEnd(col1) +
+        `${icon}  `.padEnd(10) +
+        formatDuration(t.durationMs).padEnd(12) +
+        formatCost(t.cost)
+    );
+  }
+
+  console.log('');
+}
+
+// ---------------------------------------------------------------------------
+// `clawtrace today`
+// ---------------------------------------------------------------------------
+program
+  .command('today')
+  .description('Show today\'s skill execution summary')
+  .action(() => {
+    const ct = new ClawTrace();
+    const summary = ct.getDailySummary();
+
+    console.log(chalk.blue(`\n📊 ${summary.date} Skill 执行摘要\n`));
+    printTraceTable(summary.traces);
+
+    const totalLine =
+      `Total: ${summary.totalSkills} skill(s), ` +
+      `${summary.successCount} success, ` +
+      `${summary.failedCount} failed` +
+      (summary.runningCount > 0 ? `, ${summary.runningCount} running` : '') +
+      ` | Cost: ${formatCost(summary.totalCost)}`;
+    console.log(chalk.cyan(totalLine));
+    console.log('');
+  });
+
+// ---------------------------------------------------------------------------
+// `clawtrace memory [--last <hours>]`
+// ---------------------------------------------------------------------------
+program
+  .command('memory')
+  .description('Show memory file change history')
+  .option('--last <hours>', 'Hours to look back (default: 24)', '24')
+  .action((options: { last: string }) => {
+    const hours = parseInt(options.last, 10) || 24;
+    const ct = new ClawTrace();
+    const changes = ct.getRecentMemoryChanges(hours);
+
+    console.log(chalk.blue(`\n📝 Memory 变更历史 (最近 ${hours}h)\n`));
+
+    if (changes.length === 0) {
+      console.log(chalk.yellow('No memory changes found.'));
+      console.log('');
+      return;
+    }
+
+    for (const c of changes) {
+      const time = formatTime(c.time);
+      const added = c.linesAdded > 0 ? chalk.green(`+${c.linesAdded}`) : '';
+      const removed = c.linesRemoved > 0 ? chalk.red(`-${c.linesRemoved}`) : '';
+      const diff = [added, removed].filter(Boolean).join('/') || chalk.gray('no changes');
+      const desc = c.description ? ` "${c.description}"` : '';
+      console.log(
+        `• ${chalk.gray(time)} [${chalk.cyan(c.agent)}] ${c.file} (${diff} lines)${desc}`
+      );
+    }
+    console.log('');
+  });
+
+// ---------------------------------------------------------------------------
+// `clawtrace session [--label <name>]`
+// ---------------------------------------------------------------------------
+program
+  .command('session')
+  .description('Show skill execution tree grouped by session')
+  .option('--label <name>', 'Filter to a specific session label')
+  .action((options: { label?: string }) => {
+    const ct = new ClawTrace();
+
+    if (options.label) {
+      const session = ct.getSession(options.label);
+      if (!session) {
+        console.log(chalk.yellow(`No session found with label "${options.label}".`));
+        return;
+      }
+      printSession(session);
+    } else {
+      const sessions = ct.getSessions();
+      if (sessions.length === 0) {
+        console.log(chalk.yellow('No sessions found for today.'));
+        return;
+      }
+      console.log(chalk.blue(`\n🌅 Sessions (${new Date().toISOString().slice(0, 10)})\n`));
+      for (const s of sessions) {
+        printSession(s);
+      }
+    }
+  });
+
+function printSession(session: TraceSession): void {
+  const label = session.label ?? 'default';
+  const start = formatTime(session.startTime);
+  const end = formatTime(session.endTime);
+  const range = end !== '-' ? `${start}-${end}` : `${start}-…`;
+  console.log(chalk.blue(`\n🌅 ${label} (${range})`));
+
+  for (const skill of session.skills) {
+    const icon = statusIcon(skill.status);
+    const dur = formatDuration(skill.durationMs);
+    const cost = formatCost(skill.cost);
+    console.log(
+      `├─ [${chalk.gray(formatTime(skill.startTime))}] ${chalk.white(skill.skillName)} ` +
+        `(${dur}, ${cost}) ${icon}`
+    );
+    if (skill.toolCalls && skill.toolCalls.length > 0) {
+      for (const tc of skill.toolCalls) {
+        console.log(`│  ├─ ${tc.tool} × ${tc.count} calls`);
+      }
+    }
+    if (skill.error) {
+      console.log(`│  └─ ${chalk.red('Error: ' + skill.error)}`);
+    }
+  }
+  console.log('');
+}
+
+// ---------------------------------------------------------------------------
+// `clawtrace detail --skill <name> [--last]`
+// ---------------------------------------------------------------------------
+program
+  .command('detail')
+  .description('Show detail for a specific skill\'s last execution')
+  .requiredOption('--skill <name>', 'Skill name to inspect')
+  .option('--last', 'Show only the most recent trace (default behaviour)', false)
+  .action((options: { skill: string; last: boolean }) => {
+    const ct = new ClawTrace();
+    const traces = options.last
+      ? ([ct.getLastSkillTrace(options.skill)].filter(Boolean) as SkillTrace[])
+      : ct.getSkillTraces(options.skill);
+
+    if (traces.length === 0) {
+      console.log(chalk.yellow(`No trace found for skill "${options.skill}".`));
+      return;
+    }
+
+    console.log(chalk.blue(`\n🔍 Skill Detail: ${options.skill}\n`));
+
+    for (const t of traces) {
+      const icon = statusIcon(t.status);
+      console.log(`${icon} [${chalk.gray(formatTime(t.startTime))}] ${chalk.white(t.skillName)}`);
+      console.log(chalk.gray(`  ID:       ${t.id}`));
+      console.log(chalk.gray(`  Status:   ${t.status}`));
+      console.log(chalk.gray(`  Duration: ${formatDuration(t.durationMs)}`));
+      console.log(chalk.gray(`  Cost:     ${formatCost(t.cost)}`));
+      if (t.sessionLabel) {
+        console.log(chalk.gray(`  Session:  ${t.sessionLabel}`));
+      }
+      if (t.error) {
+        console.log(chalk.red(`  Error:    ${t.error}`));
+      }
+      if (t.toolCalls && t.toolCalls.length > 0) {
+        console.log(chalk.gray('  Tool calls:'));
+        for (const tc of t.toolCalls) {
+          console.log(chalk.gray(`    • ${tc.tool} × ${tc.count}`));
+        }
+      }
+      if (t.subAgents && t.subAgents.length > 0) {
+        console.log(chalk.gray('  Sub-agents:'));
+        printSubAgentTree(t.subAgents, '    ');
+      }
+      console.log('');
+    }
+  });
+
+function printSubAgentTree(agents: import('./types').SubAgentCall[], indent: string): void {
+  for (const a of agents) {
+    const icon = statusIcon(a.status);
+    console.log(
+      chalk.gray(
+        `${indent}${icon} ${a.agentName} (${formatDuration(a.durationMs)})`
+      )
+    );
+    if (a.children && a.children.length > 0) {
+      printSubAgentTree(a.children, indent + '  ');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// `clawtrace cron`
+// ---------------------------------------------------------------------------
+program
+  .command('cron')
+  .description('Show today\'s cron job execution history')
+  .action(() => {
+    const ct = new ClawTrace();
+    const records = ct.getCronHistory();
+
+    console.log(chalk.blue('\n⏰ Cron 执行历史\n'));
+
+    if (records.length === 0) {
+      console.log(chalk.yellow('No cron records found for today.'));
+      console.log('');
+      return;
+    }
+
+    const col1 = Math.max(25, ...records.map((r: CronRecord) => r.jobName.length)) + 2;
+    console.log(
+      chalk.blue('Job'.padEnd(col1) + 'Status'.padEnd(10) + 'Duration'.padEnd(12) + 'Cron')
+    );
+    console.log(chalk.gray('─'.repeat(60)));
+
+    for (const r of records) {
+      console.log(
+        r.jobName.padEnd(col1) +
+          `${statusIcon(r.status)}  `.padEnd(10) +
+          formatDuration(r.durationMs).padEnd(12) +
+          (r.cronExpr ?? '-')
+      );
+    }
+    console.log('');
+  });
+
+// ---------------------------------------------------------------------------
+// `clawtrace record --skill <name> --status <s> [options]`
+// ---------------------------------------------------------------------------
+program
+  .command('record')
+  .description('Manually record a skill trace entry')
+  .requiredOption('--skill <name>', 'Skill name')
+  .requiredOption('--status <status>', 'Execution status: success | failed | running')
+  .option('--duration <ms>', 'Duration in milliseconds')
+  .option('--cost <usd>', 'Estimated cost in USD')
+  .option('--session <label>', 'Session label')
+  .option('--error <message>', 'Error message (for failed traces)')
+  .action((options: {
+    skill: string;
+    status: string;
+    duration?: string;
+    cost?: string;
+    session?: string;
+    error?: string;
+  }) => {
+    const allowedStatuses = ['success', 'failed', 'running'];
+    if (!allowedStatuses.includes(options.status)) {
+      console.error(chalk.red(`❌ Invalid status "${options.status}". Use: success | failed | running`));
+      process.exit(1);
+    }
+
+    const ct = new ClawTrace();
+    const now = new Date().toISOString();
+    const durationMs = options.duration ? parseInt(options.duration, 10) : undefined;
+    const cost = options.cost ? parseFloat(options.cost) : undefined;
+
+    const id = ct.recordTrace({
+      skillName: options.skill,
+      status: options.status as TraceStatus,
+      startTime: now,
+      durationMs,
+      sessionLabel: options.session,
+      error: options.error,
+      cost,
+    });
+
+    console.log(chalk.green(`✅ Trace recorded: ${id}`));
+  });
+
+program.parse(process.argv);
