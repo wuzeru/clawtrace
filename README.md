@@ -43,7 +43,7 @@ my-openclaw-project/
 
 ```bash
 cd my-openclaw-project
-npm install clawtrace
+npm install @banliang/clawtrace
 ```
 
 ### Step 2 — Detect skills and configure
@@ -226,7 +226,7 @@ my-openclaw-project/
 If you have your own orchestration code that calls skills, you can also use the TypeScript API directly:
 
 ```typescript
-import { ClawTrace } from 'clawtrace';
+import { ClawTrace } from '@banliang/clawtrace';
 const ct = new ClawTrace();
 
 const result = await ct.wrap('my-skill', async () => {
@@ -295,7 +295,7 @@ Total: 4 skill(s), 2 success, 1 failed, 1 running | Cost: $0.66
 ### Integrate as a Library into an Existing Skill
 
 ```typescript
-import { ClawTrace } from 'clawtrace';
+import { ClawTrace } from '@banliang/clawtrace';
 
 const ct = new ClawTrace();
 
